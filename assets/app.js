@@ -28,9 +28,9 @@ import {
 import { badge, chip, $, renderList } from "./ui.js";
 
 // --- Release identifiers (keep in sync with sw.js) ---
-const SW_REG_VERSION = "3.01"; // used for ./sw.js?v=...
-const EXPECTED_CACHE = "safair-duty-v3.01"; // must equal CACHE in sw.js
-const APP_VERSION = "v3.01"; // fallback label
+const SW_REG_VERSION = "3.02"; // used for ./sw.js?v=...
+const EXPECTED_CACHE = "safair-duty-v3.02"; // must equal CACHE in sw.js
+const APP_VERSION = "v3.02"; // fallback label
 
 let deferredPrompt = null;
 let SETTINGS = null;
@@ -380,7 +380,7 @@ async function boot() {
 	await setupSwUpdates(); // register + update checks + banner logic
 	await setVersionStamp(); // footer label from active SW (or fallback)
 	await initTheme();
-	iosProxyDateInputs(); // iPad-friendly date/time
+	iosSplitDateTimeInputs(); // iPad-friendly date/time
 	await refresh();
 }
 
@@ -838,131 +838,93 @@ function renderHistory(all) {
 	}
 }
 
-/* ======================== iOS-friendly date inputs (proxy) ========================
-   Keep a styled text input visible; drive a hidden native datetime-local input.
-   This avoids the “squash” during focus on iPad while still using the native picker.
------------------------------------------------------------------------------------*/
-function iosProxyDateInputs() {
+// iOS/iPad: replace each datetime-local with a Date + Time pair (no squashing, time always visible)
+function iosSplitDateTimeInputs() {
 	const isiOS =
 		/iPad|iPhone|iPod/.test(navigator.userAgent) ||
 		(navigator.userAgent.includes("Mac") && "ontouchend" in document);
 	if (!isiOS) return;
 
 	const FIELDS = [
-		{ id: "report", type: "datetime-local", ph: "yyyy / mm / dd, --:--" },
-		{ id: "off", type: "datetime-local", ph: "yyyy / mm / dd, --:--" },
-		{ id: "sleepStart", type: "datetime-local", ph: "yyyy / mm / dd, --:--" },
-		{ id: "sleepEnd", type: "datetime-local", ph: "yyyy / mm / dd, --:--" },
+		{ id: "report" },
+		{ id: "off" },
+		{ id: "sleepStart" },
+		{ id: "sleepEnd" },
 	];
 
-	const L = window.luxon?.DateTime;
-	const formatDisplay = (iso, kind = "datetime-local") => {
-		if (!iso) return "";
-		if (L) {
-			const dt = L.fromISO(iso);
-			if (!dt.isValid) return iso;
-			return kind.startsWith("date")
-				? dt.toFormat("dd MMM yyyy")
-				: dt.toFormat("dd MMM yyyy, HH:mm");
-		}
-		// Fallback formatter
-		if (iso.includes("T")) {
-			const [d, t] = iso.split("T");
-			return `${d
-				.split("-")
-				.reverse()
-				.join(" ")
-				.replace(/(\d{2}) (\d{2}) (\d{4})/, "$1 $2 $3")}, ${t.slice(0, 5)}`;
-		}
-		return iso.split("-").reverse().join(" ");
+	// Parse "YYYY-MM-DDThh:mm" into parts
+	const splitISO = (iso) => {
+		if (!iso) return { d: "", t: "" };
+		const [d, t] = iso.split("T");
+		return { d: d || "", t: (t || "").slice(0, 5) };
 	};
 
+	// Build "YYYY-MM-DDThh:mm" from parts (time optional)
+	const joinISO = (d, t) => (d ? d + "T" + (t || "00:00") : "");
+
 	for (const f of FIELDS) {
-		const native = document.getElementById(f.id);
-		if (!native) continue;
+		const hidden = document.getElementById(f.id);
+		if (!hidden) continue;
 
-		// Ensure correct native type and minute granularity
-		native.type = f.type;
-		native.step = "60";
+		// Ensure it's the right type for consumers
+		hidden.type = "datetime-local";
 
-		// Wrapper to stack proxy + native
-		const wrapper = document.createElement("div");
-		wrapper.style.position = "relative";
-		wrapper.style.width = "100%";
+		// Wrap so we can place two visible controls
+		const wrap = document.createElement("div");
+		wrap.className = "dt-wrap";
+		hidden.parentElement.insertBefore(wrap, hidden);
 
-		// Visible proxy (styled like your inputs)
-		const proxy = document.createElement("input");
-		proxy.type = "text";
-		proxy.id = f.id + "_display";
-		proxy.placeholder = f.ph;
-		proxy.autocomplete = "off";
-		proxy.inputMode = "none"; // avoid keyboard on iOS
-		proxy.value = native.value ? formatDisplay(native.value, f.type) : "";
+		// Visible date + time controls
+		const dateEl = document.createElement("input");
+		dateEl.type = "date";
+		dateEl.id = f.id + "_date";
+		dateEl.placeholder = "yyyy-mm-dd";
 
-		// Insert: wrapper → proxy + native
-		native.parentElement.insertBefore(wrapper, native);
-		wrapper.appendChild(proxy);
-		wrapper.appendChild(native);
+		const timeEl = document.createElement("input");
+		timeEl.type = "time";
+		timeEl.step = "60"; // minute granularity
+		timeEl.id = f.id + "_time";
+		timeEl.placeholder = "--:--";
 
-		// Native overlays proxy but is invisible; taps open the picker
-		Object.assign(native.style, {
+		// Move hidden into wrapper and hide it
+		wrap.appendChild(dateEl);
+		wrap.appendChild(timeEl);
+		wrap.appendChild(hidden);
+		Object.assign(hidden.style, {
 			position: "absolute",
-			inset: "0",
-			width: "100%",
-			height: "100%",
 			opacity: "0",
-			pointerEvents: "auto",
-			background: "transparent",
+			width: "0",
+			height: "0",
+			pointerEvents: "none",
 		});
 
-		// Remember last picked time per field (used if iOS gives us date-only)
-		if (native.value && native.value.includes("T")) {
-			native.dataset.hhmm = native.value.split("T")[1].slice(0, 5);
-		} else {
-			native.dataset.hhmm = "00:00"; // change to your preferred default if you like
-		}
+		// Init from existing value
+		const { d, t } = splitISO(hidden.value);
+		dateEl.value = d || "";
+		timeEl.value = t || "";
 
-		// Ensure datetime-local always has a time part; then update proxy
-		const ensureTimeThenSync = () =>
-			requestAnimationFrame(() => {
-				let v = native.value || "";
-				if (f.type === "datetime-local" && v && !v.includes("T")) {
-					// date-only -> append last hh:mm (or default)
-					const hhmm = native.dataset.hhmm || "00:00";
-					v = v + "T" + hhmm;
-					native.value = v;
-				}
-				if (v.includes("T")) {
-					native.dataset.hhmm = v.split("T")[1].slice(0, 5); // remember for next time
-					proxy.value = formatDisplay(v, f.type);
-				} else if (v) {
-					proxy.value = formatDisplay(v, "date") + ", --:--";
-				} else {
-					proxy.value = "";
-				}
+		// Keep hidden ISO up to date
+		const syncHidden = () => {
+			hidden.value = joinISO(dateEl.value, timeEl.value);
+			hidden.dispatchEvent(new Event("input", { bubbles: true }));
+			hidden.dispatchEvent(new Event("change", { bubbles: true }));
+		};
+
+		dateEl.addEventListener("input", syncHidden);
+		timeEl.addEventListener("input", syncHidden);
+		dateEl.addEventListener("change", syncHidden);
+		timeEl.addEventListener("change", syncHidden);
+
+		// If a form reset happens, re-sync the visible parts
+		if (hidden.form) {
+			hidden.form.addEventListener("reset", () => {
+				requestAnimationFrame(() => {
+					const parts = splitISO(hidden.value);
+					dateEl.value = parts.d || "";
+					timeEl.value = parts.t || "";
+				});
 			});
-
-		native.addEventListener("input", ensureTimeThenSync);
-		native.addEventListener("change", ensureTimeThenSync);
-		native.addEventListener("blur", ensureTimeThenSync);
-
-		// If user clears the proxy, clear native too
-		proxy.addEventListener("input", () => {
-			if (proxy.value === "") {
-				native.value = "";
-				native.dispatchEvent(new Event("input", { bubbles: true }));
-			}
-		});
-
-		// After form reset, re-sync
-		if (native.form) {
-			native.form.addEventListener("reset", () =>
-				requestAnimationFrame(ensureTimeThenSync)
-			);
 		}
-
-		// Initial paint
-		ensureTimeThenSync();
 	}
 }
 

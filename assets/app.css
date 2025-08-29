@@ -200,6 +200,22 @@ input[type="number"]::-webkit-inner-spin-button {
 	margin: 0;
 }
 
+/* iOS Date+Time split styling */
+.dt-wrap {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 8px;
+}
+.dt-wrap > input[type="date"],
+.dt-wrap > input[type="time"] {
+	/* they inherit your global input styles already */
+}
+@media (max-width: 520px) {
+	.dt-wrap {
+		grid-template-columns: 1fr;
+	} /* stack on narrow screens */
+}
+
 /* helper grid if you want to use class instead of inline styles */
 .grid {
 	display: grid;
