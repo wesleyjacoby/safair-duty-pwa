@@ -1,0 +1,326 @@
+:root {
+	--bg: #0b0f14;
+	--card: #111823;
+	--ink: #e8f1ff;
+	--muted: #9ab;
+	--accent: #4cc9f0;
+	--ok: #46d582;
+	--warn: #f2c744;
+	--bad: #ff6b6b;
+	--ring: #2a3242;
+	--chip: #1a2230;
+	--radius: 14px;
+	--gap: 16px;
+	--pad: 16px;
+	--font: 15px;
+}
+
+* {
+	box-sizing: border-box;
+	-webkit-tap-highlight-color: transparent;
+}
+html,
+body {
+	height: 100%;
+}
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--ink);
+	font: var(--font) / 1.5 system-ui, -apple-system, Segoe UI, Roboto, Inter,
+		sans-serif;
+	padding-left: env(safe-area-inset-left, 0);
+	padding-right: env(safe-area-inset-right, 0);
+}
+
+/* ---------- Top bar ---------- */
+.topbar {
+	position: sticky;
+	top: 0;
+	z-index: 10;
+	display: flex;
+	gap: 12px;
+	align-items: center;
+	padding: 12px max(env(safe-area-inset-left, 0), 16px) 12px
+		max(env(safe-area-inset-right, 0), 16px);
+	background: #0a1018;
+	border-bottom: 1px solid var(--ring);
+	backdrop-filter: blur(6px);
+}
+.topbar h1 {
+	font-size: 18px;
+	margin: 0;
+	letter-spacing: 0.3px;
+}
+.topbar .spacer {
+	flex: 1;
+}
+
+/* ---------- Layout ---------- */
+.container {
+	max-width: 980px;
+	margin: 0 auto;
+	padding: var(--pad);
+	display: grid;
+	gap: var(--gap);
+}
+.card {
+	background: var(--card);
+	border: 1px solid var(--ring);
+	border-radius: var(--radius);
+	padding: 16px;
+	box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset,
+		0 12px 24px rgba(0, 0, 0, 0.25);
+}
+h2 {
+	margin: 0 0 12px 0;
+	font-size: 16px;
+}
+.grid {
+	display: grid;
+	gap: 12px;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+/* ---------- Labels & inputs ---------- */
+label {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	font-size: 13px;
+	color: var(--muted);
+}
+input,
+select,
+button {
+	font: inherit;
+}
+
+input,
+select {
+	height: 48px;
+	background: #0d1420;
+	color: var(--ink);
+	border: 1px solid var(--ring);
+	padding: 10px 12px;
+	border-radius: 10px;
+	outline: none;
+	transition: border-color 0.2s, box-shadow 0.2s;
+}
+input:focus,
+select:focus {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 3px #4cc9f033;
+}
+
+/* ---------- Remove number spinners ---------- */
+input[type="number"] {
+	appearance: textfield; /* Standard */
+	-moz-appearance: textfield; /* Firefox */
+	-webkit-appearance: none; /* WebKit */
+	padding-right: 12px;
+}
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+	-webkit-appearance: none !important;
+	appearance: none !important;
+	margin: 0;
+	display: none;
+}
+input[type="number"]::-ms-clear,
+input[type="number"]::-ms-reveal {
+	display: none;
+}
+@supports (-webkit-touch-callout: none) {
+	input[type="number"] {
+		-webkit-appearance: none;
+		padding-right: 12px;
+	}
+}
+
+/* ---------- Buttons ---------- */
+.btn {
+	min-height: 48px;
+	padding: 10px 14px;
+	border-radius: 10px;
+	border: 1px solid var(--ring);
+	background: #101826;
+	color: var(--ink);
+	cursor: pointer;
+	transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
+}
+.btn:hover {
+	background: #182235;
+	box-shadow: 0 0 0 2px #4cc9f044;
+}
+.btn:active {
+	transform: translateY(1px) scale(0.98);
+}
+.btn:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 3px #4cc9f066;
+}
+
+.btn.primary {
+	background: linear-gradient(180deg, #1b6bff, #0e3dbf);
+	border-color: #1040c2;
+}
+.btn.primary:hover {
+	background: linear-gradient(180deg, #2b7bff, #1b4ddf);
+	box-shadow: 0 0 6px #1b6bff88;
+}
+
+.btn.ghost {
+	background: transparent;
+}
+.btn.ghost:hover {
+	background: rgba(255, 255, 255, 0.05);
+}
+
+.btn.danger {
+	background: #3a1616;
+	border-color: #5a2a2a;
+	color: #ffb3b3;
+}
+.btn.danger:hover {
+	background: #4a1e1e;
+	box-shadow: 0 0 4px #ff6b6b55;
+}
+
+/* ---------- Badges / chips ---------- */
+.badges {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+.badge {
+	background: #0f1724;
+	border: 1px solid var(--ring);
+	border-radius: 100px;
+	padding: 6px 10px;
+	font-size: 12px;
+}
+.badge.ok {
+	border-color: #1e6c49;
+	background: #0c1914;
+}
+.badge.warn {
+	border-color: #6a571b;
+	background: #19170c;
+}
+.badge.bad {
+	border-color: #6c1e1e;
+	background: #190c0c;
+}
+.notes {
+	margin-top: 10px;
+	color: var(--muted);
+	font-size: 13px;
+}
+.gauge {
+	font-size: 40px;
+	font-weight: 700;
+	letter-spacing: 1px;
+	padding: 8px 0;
+}
+.chips {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.chip {
+	background: var(--chip);
+	border: 1px solid var(--ring);
+	border-radius: 999px;
+	padding: 6px 10px;
+	font-size: 12px;
+}
+
+/* ---------- Footer ---------- */
+.footer {
+	display: flex;
+	justify-content: center;
+	padding: calc(16px + env(safe-area-inset-bottom, 0));
+	color: var(--muted);
+}
+.small {
+	font-size: 12px;
+}
+.muted {
+	color: var(--muted);
+}
+
+/* ---------- History list ---------- */
+#history ul {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+}
+#history li {
+	padding: 10px 12px;
+	border: 1px solid var(--ring);
+	border-radius: 10px;
+	margin-bottom: 8px;
+	background: #0d1420;
+	cursor: pointer;
+	transition: background 0.2s, border-color 0.2s;
+}
+#history li:hover {
+	border-color: var(--accent);
+	background: #152030;
+}
+#history li.active {
+	outline: 2px solid var(--accent);
+	background: #0f1a2a;
+}
+
+/* ---------- Responsive tweaks ---------- */
+@media (max-width: 480px) {
+	:root {
+		--gap: 12px;
+		--pad: 12px;
+		--font: 16px;
+	}
+	.topbar h1 {
+		font-size: 16px;
+	}
+	.grid {
+		grid-template-columns: 1fr;
+	}
+	.gauge {
+		font-size: 36px;
+	}
+	.btn {
+		width: 100%;
+	}
+	input[type="date"],
+	input[type="datetime-local"] {
+		font-size: 16px;
+	}
+}
+@media (min-width: 481px) and (max-width: 768px) {
+	:root {
+		--gap: 14px;
+		--pad: 14px;
+		--font: 16px;
+	}
+	.grid {
+		grid-template-columns: repeat(2, minmax(180px, 1fr));
+	}
+}
+@media (min-width: 769px) and (max-width: 1024px) {
+	:root {
+		--gap: 16px;
+		--pad: 16px;
+		--font: 15px;
+	}
+	.grid {
+		grid-template-columns: repeat(3, minmax(200px, 1fr));
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	* {
+		animation: none !important;
+		transition: none !important;
+	}
+}
