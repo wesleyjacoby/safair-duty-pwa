@@ -28,9 +28,9 @@ import {
 import { badge, chip, $, renderList } from "./ui.js";
 
 // --- Release identifiers (keep in sync with sw.js) ---
-const SW_REG_VERSION = "3.0"; // used for ./sw.js?v=...
-const EXPECTED_CACHE = "safair-duty-v3.0"; // must equal CACHE in sw.js
-const APP_VERSION = "v3.0"; // fallback label
+const SW_REG_VERSION = "3.01"; // used for ./sw.js?v=...
+const EXPECTED_CACHE = "safair-duty-v3.01"; // must equal CACHE in sw.js
+const APP_VERSION = "v3.01"; // fallback label
 
 let deferredPrompt = null;
 let SETTINGS = null;
@@ -100,6 +100,7 @@ function askSwVersion() {
 	});
 }
 
+// Show banner only if the ACTIVE SW isn't the version we expect.
 async function setupSwUpdates() {
 	if (!("serviceWorker" in navigator)) return;
 
@@ -107,36 +108,41 @@ async function setupSwUpdates() {
 		"./sw.js?v=" + SW_REG_VERSION
 	);
 
-	// If an update is already waiting, show the banner (only show if we have a controller,
-	// so we don't flash it on first install).
-	if (reg.waiting && navigator.serviceWorker.controller) showUpdateBar(true);
+	const activeMatchesExpected = async () => {
+		try {
+			const meta = await askSwVersion(); // { cache, scope }
+			return !!(meta?.cache && EXPECTED_CACHE && meta.cache === EXPECTED_CACHE);
+		} catch {
+			return false;
+		}
+	};
 
-	// If a new SW arrives, show the banner once it's installed.
+	const recomputeBanner = async () => {
+		const matched = await activeMatchesExpected();
+		// Only show the banner if the ACTIVE SW is NOT what we expect.
+		showUpdateBar(!matched && !!navigator.serviceWorker.controller);
+	};
+
+	// Initial evaluation
+	await recomputeBanner();
+
+	// When a new worker reaches 'installed', re-evaluate banner
 	reg.addEventListener("updatefound", () => {
-		const sw = reg.installing;
-		if (!sw) return;
-		sw.addEventListener("statechange", () => {
-			if (sw.state === "installed" && navigator.serviceWorker.controller) {
-				showUpdateBar(true);
-			}
+		reg.installing?.addEventListener("statechange", () => {
+			// Ask the browser to check / and recompute
+			reg.update?.();
+			recomputeBanner();
 		});
 	});
 
-	// Belt-and-braces: if the active SW version doesn't match what the page expects, surface the banner.
-	try {
-		const meta = await askSwVersion(); // {cache, scope}
-		if (meta?.cache && EXPECTED_CACHE && meta.cache !== EXPECTED_CACHE) {
-			showUpdateBar(true);
-			reg.update?.();
-		}
-	} catch {}
-
-	// Reload when the new worker actually takes control (works on most browsers)
+	// When the controller changes, we definitely have the new SW—hide the banner.
 	navigator.serviceWorker.addEventListener("controllerchange", () => {
+		showUpdateBar(false);
+		// Hard reload ensures all assets are from the new cache
 		window.location.reload();
 	});
 
-	// Make the "Reload" button extremely robust on iOS/Safari
+	// Make the Reload button robust on iOS
 	document
 		.getElementById("btnUpdateNow")
 		?.addEventListener("click", async () => {
@@ -144,25 +150,24 @@ async function setupSwUpdates() {
 				const r = await navigator.serviceWorker.getRegistration();
 				if (!r) return window.location.reload();
 
-				// Wait until a given worker is 'activated', with a timeout fallback.
 				const waitActivated = (sw) =>
 					new Promise((resolve) => {
 						if (!sw) return resolve();
 						const done = () => resolve();
-						const onState = () => {
-							if (sw.state === "activated") done();
-						};
-						sw.addEventListener("statechange", onState, { once: true });
-						// Also resolve on controllerchange (if it does fire)
+						sw.addEventListener(
+							"statechange",
+							() => {
+								if (sw.state === "activated") done();
+							},
+							{ once: true }
+						);
 						navigator.serviceWorker.addEventListener("controllerchange", done, {
 							once: true,
 						});
-						// And hard timeout so we don't get stuck on iOS
-						setTimeout(done, 2000);
+						setTimeout(done, 2000); // iOS safety net
 					});
 
 				if (r.waiting) {
-					// Tell the waiting SW to take over now
 					r.waiting.postMessage({ type: "SKIP_WAITING" });
 					await waitActivated(r.waiting);
 					return window.location.reload();
@@ -175,16 +180,23 @@ async function setupSwUpdates() {
 					return window.location.reload();
 				}
 
-				// No installing/waiting SW? Force a check and then reload anyway.
+				// Force a check and then reload anyway
 				await r.update?.();
 				setTimeout(() => window.location.reload(), 500);
 			} catch {
-				// Absolute fallback
 				window.location.reload();
 			}
 		});
 
-	// Ask the browser to check now
+	// Re-check when page becomes visible (helps iOS resume state)
+	document.addEventListener("visibilitychange", () => {
+		if (!document.hidden) {
+			reg.update?.();
+			recomputeBanner();
+		}
+	});
+
+	// One more explicit update check on load
 	reg.update?.();
 }
 
