@@ -139,7 +139,7 @@ small,
 	cursor: not-allowed;
 }
 
-/* --- Theme toggle button --- */
+/* Theme toggle as button */
 .btn.toggle[aria-pressed="true"] {
 	background: var(--primary);
 	color: #fff;
@@ -172,6 +172,7 @@ textarea {
 	outline: none;
 	transition: box-shadow 0.12s ease, border-color 0.12s ease,
 		background-color 0.12s ease;
+	font-size: 16px; /* prevents iOS zoom on focus */
 }
 input::placeholder,
 textarea::placeholder {
@@ -200,34 +201,40 @@ input[type="number"]::-webkit-inner-spin-button {
 	-webkit-appearance: none;
 	margin: 0;
 }
-input[type="time"] {
-	height: var(--control-h);
-	min-height: var(--control-h);
-	-webkit-appearance: none; /* iOS: don’t shrink to contents */
-	text-align: left; /* iOS: avoid centered digits */
-}
 
-/* iOS Date+Time split styling */
-.dt-wrap {
-	display: grid;
-	grid-template-columns: 1fr 1fr;
-	gap: 8px;
-}
-.dt-wrap > input[type="date"],
-.dt-wrap > input[type="time"] {
-	/* they inherit your global input styles already */
-}
-@media (max-width: 520px) {
-	.dt-wrap {
-		grid-template-columns: 1fr;
-	} /* stack on narrow screens */
-}
-
-/* helper grid if you want to use class instead of inline styles */
+/* helper grid */
 .grid {
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 	gap: 12px;
+}
+
+/* ---------- Datetime overlay (iPad/iOS only; enabled via .dt-overlay wrapper) ---------- */
+.dt-overlay {
+	position: relative;
+	display: block;
+}
+.dt-overlay > input[type="datetime-local"] {
+	position: relative;
+	z-index: 2;
+	background: var(--panel);
+}
+.dt-overlay .dt-mask {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	padding: 11.5px 12px; /* match input padding */
+	color: var(--text);
+	pointer-events: none; /* touches go through */
+	z-index: 3;
+	border-radius: 10px;
+}
+.dt-overlay.open .dt-mask {
+	display: none;
+} /* show native editor while focused */
+.dt-overlay:not(.has-value) .dt-mask {
+	color: var(--muted);
 }
 
 /* ---------- Chips / Badges ---------- */
@@ -260,7 +267,7 @@ input[type="time"] {
 	color: var(--bad);
 }
 
-/* --- Fatigue gauge tones --- */
+/* Fatigue gauge tones */
 #fatigueGauge.t-ok {
 	color: var(--ok);
 }
@@ -271,7 +278,7 @@ input[type="time"] {
 	color: var(--bad);
 }
 
-/* --- Chip tones (badges already have .ok/.warn/.bad) --- */
+/* Chip tones */
 .chip.ok {
 	border-color: var(--ok);
 	color: var(--ok);
@@ -334,13 +341,4 @@ footer .btn {
 :focus-visible {
 	outline: 2px solid var(--primary);
 	outline-offset: 3px;
-}
-
-/* Keep "text-mode" date fields visually identical */
-input[type="text"][placeholder^="yyyy"] {
-	color: var(--text);
-}
-input[type="text"][placeholder^="yyyy"]::placeholder {
-	color: var(--muted);
-	opacity: 0.9;
 }

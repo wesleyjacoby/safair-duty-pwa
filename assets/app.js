@@ -1,5 +1,6 @@
 // assets/app.js
-// UI wiring + rendering. Assumes Dexie DB, Luxon, jsPDF vendor scripts are present.
+// UI wiring + rendering. Assumes Dexie, Luxon, jsPDF vendor scripts are present.
+// NOTE: keep SW_REG_VERSION and EXPECTED_CACHE in sync with sw.js:CACHE.
 
 import {
 	addDuty,
@@ -27,17 +28,21 @@ import {
 
 import { badge, chip, $, renderList } from "./ui.js";
 
-// --- Release identifiers (keep in sync with sw.js) ---
-const SW_REG_VERSION = "3.03"; // used for ./sw.js?v=...
-const EXPECTED_CACHE = "safair-duty-v3.03"; // must equal CACHE in sw.js
-const APP_VERSION = "v3.03"; // fallback label
+/* ---------------- Release identifiers ---------------- */
+const SW_REG_VERSION = "3.4"; // used for ./sw.js?v=...  (bump on deploy)
+const EXPECTED_CACHE = "safair-duty-v3.4"; // must equal CACHE in sw.js
+const APP_VERSION = "v3.4"; // footer fallback if SW not ready
 
+/* ---------------- Globals ---------------- */
+const { DateTime } = window.luxon || {};
 let deferredPrompt = null;
 let SETTINGS = null;
 let SELECTED_ID = null;
 const MAX_LIST = 20;
 
-/* ======================== Theme ======================== */
+/* =======================================================
+   Theme
+======================================================= */
 function applyTheme(theme) {
 	const t = theme === "dark" ? "dark" : "light";
 	document.documentElement.setAttribute("data-theme", t);
@@ -65,7 +70,9 @@ async function initTheme() {
 		});
 }
 
-/* ======================== Install prompt ======================== */
+/* =======================================================
+   Install prompt
+======================================================= */
 window.addEventListener("beforeinstallprompt", (e) => {
 	e.preventDefault();
 	deferredPrompt = e;
@@ -79,13 +86,14 @@ $("#btnInstall")?.addEventListener("click", async () => {
 	$("#btnInstall").disabled = true;
 });
 
-/* ======================== SW updates ======================== */
+/* =======================================================
+   SW updates / banner
+======================================================= */
 function showUpdateBar(show = true) {
 	const bar = document.getElementById("updateBar");
 	if (!bar) return;
 	bar.style.display = show ? "flex" : "none";
 }
-
 function askSwVersion() {
 	return new Promise(async (resolve) => {
 		try {
@@ -99,108 +107,79 @@ function askSwVersion() {
 		}
 	});
 }
-
-// Show banner only if the ACTIVE SW isn't the version we expect.
+async function refreshSwBanner() {
+	// Hide the banner if the active SW cache label matches EXPECTED_CACHE.
+	const meta = await askSwVersion(); // {cache, scope}
+	const hasCtrl = !!navigator.serviceWorker?.controller;
+	const upToDate = !!meta?.cache && meta.cache === EXPECTED_CACHE;
+	showUpdateBar(hasCtrl && !upToDate);
+}
 async function setupSwUpdates() {
 	if (!("serviceWorker" in navigator)) return;
-
 	const reg = await navigator.serviceWorker.register(
 		"./sw.js?v=" + SW_REG_VERSION
 	);
 
-	const activeMatchesExpected = async () => {
-		try {
-			const meta = await askSwVersion(); // { cache, scope }
-			return !!(meta?.cache && EXPECTED_CACHE && meta.cache === EXPECTED_CACHE);
-		} catch {
-			return false;
-		}
-	};
+	// If an update is already waiting and we have a controller, show banner.
+	if (reg.waiting && navigator.serviceWorker.controller) showUpdateBar(true);
 
-	const recomputeBanner = async () => {
-		const matched = await activeMatchesExpected();
-		// Only show the banner if the ACTIVE SW is NOT what we expect.
-		showUpdateBar(!matched && !!navigator.serviceWorker.controller);
-	};
-
-	// Initial evaluation
-	await recomputeBanner();
-
-	// When a new worker reaches 'installed', re-evaluate banner
+	// Show when a new worker is installed (not first install).
 	reg.addEventListener("updatefound", () => {
-		reg.installing?.addEventListener("statechange", () => {
-			// Ask the browser to check / and recompute
-			reg.update?.();
-			recomputeBanner();
+		const sw = reg.installing;
+		if (!sw) return;
+		sw.addEventListener("statechange", () => {
+			if (sw.state === "installed" && navigator.serviceWorker.controller) {
+				showUpdateBar(true);
+			}
 		});
 	});
 
-	// When the controller changes, we definitely have the new SW—hide the banner.
-	navigator.serviceWorker.addEventListener("controllerchange", () => {
-		showUpdateBar(false);
-		// Hard reload ensures all assets are from the new cache
-		window.location.reload();
-	});
-
-	// Make the Reload button robust on iOS
+	// Wire the button. Robust for Safari/iPadOS.
 	document
 		.getElementById("btnUpdateNow")
 		?.addEventListener("click", async () => {
+			const button = document.getElementById("btnUpdateNow");
+			if (button) {
+				button.disabled = true;
+				button.textContent = "Updating…";
+			}
 			try {
 				const r = await navigator.serviceWorker.getRegistration();
-				if (!r) return window.location.reload();
-
-				const waitActivated = (sw) =>
-					new Promise((resolve) => {
-						if (!sw) return resolve();
-						const done = () => resolve();
-						sw.addEventListener(
-							"statechange",
-							() => {
-								if (sw.state === "activated") done();
-							},
-							{ once: true }
-						);
-						navigator.serviceWorker.addEventListener("controllerchange", done, {
-							once: true,
-						});
-						setTimeout(done, 2000); // iOS safety net
-					});
-
-				if (r.waiting) {
+				if (r?.waiting) {
 					r.waiting.postMessage({ type: "SKIP_WAITING" });
-					await waitActivated(r.waiting);
-					return window.location.reload();
+					return; // controllerchange triggers reload
 				}
-
-				if (r.installing) {
-					await waitActivated(r.installing);
-					r.waiting?.postMessage({ type: "SKIP_WAITING" });
-					await waitActivated(r.waiting || r.active);
-					return window.location.reload();
+				if (r?.installing) {
+					r.installing.addEventListener("statechange", () => {
+						if (r.installing?.state === "installed") {
+							r.waiting?.postMessage({ type: "SKIP_WAITING" });
+						}
+					});
+					return;
 				}
-
-				// Force a check and then reload anyway
-				await r.update?.();
-				setTimeout(() => window.location.reload(), 500);
+				await r?.update?.();
+				setTimeout(() => window.location.reload(), 400);
 			} catch {
 				window.location.reload();
 			}
 		});
 
-	// Re-check when page becomes visible (helps iOS resume state)
-	document.addEventListener("visibilitychange", () => {
-		if (!document.hidden) {
-			reg.update?.();
-			recomputeBanner();
-		}
+	// When the new SW takes control, reload to pick up fresh assets.
+	navigator.serviceWorker.addEventListener("controllerchange", () => {
+		window.location.reload();
 	});
 
-	// One more explicit update check on load
+	// Recheck banner on visibility changes (helps iOS after backgrounding).
+	document.addEventListener("visibilitychange", () => {
+		if (document.visibilityState === "visible") refreshSwBanner();
+	});
+
 	reg.update?.();
 }
 
-/* ======================== Version stamp ======================== */
+/* =======================================================
+   Version stamp (footer)
+======================================================= */
 async function setVersionStamp() {
 	const el = document.getElementById("versionStamp");
 	if (!el) return;
@@ -211,7 +190,9 @@ async function setVersionStamp() {
 	el.textContent = `${label} (${today})`;
 }
 
-/* ======================== Settings form ======================== */
+/* =======================================================
+   Settings form
+======================================================= */
 $("#settingsForm")?.addEventListener("submit", async (e) => {
 	e.preventDefault();
 	const [g, c, elev] = $("#setBands")
@@ -230,7 +211,9 @@ $("#settingsForm")?.addEventListener("submit", async (e) => {
 	refresh();
 });
 
-/* ======================== Duty form ======================== */
+/* =======================================================
+   Duty form
+======================================================= */
 $("#dutyForm")?.addEventListener("submit", async (e) => {
 	e.preventDefault();
 	const form = e.target;
@@ -242,18 +225,19 @@ $("#dutyForm")?.addEventListener("submit", async (e) => {
 		location: form.location.value || "Home",
 		sps: form.sps.value ? parseInt(form.sps.value, 10) : null,
 	};
-	if (form.date && form.date.value) d.date = form.date.value;
+	if (form.date && form.date.value) d.date = form.date.value; // optional
 	await addDuty(d);
 	await refresh();
 	form.reset();
-	// Restore defaults
 	$("#dutyType").value = "FDP";
 	$("#sectors").value = 2;
 	$("#location").value = "Home";
 	$("#sps").value = 3;
 });
 
-/* ======================== Sleep form ======================== */
+/* =======================================================
+   Sleep form
+======================================================= */
 $("#sleepForm")?.addEventListener("submit", async (e) => {
 	e.preventDefault();
 	const s = {
@@ -267,7 +251,9 @@ $("#sleepForm")?.addEventListener("submit", async (e) => {
 	e.target.reset();
 });
 
-/* ======================== Clear / Export / Import / PDF / Delete ======================== */
+/* =======================================================
+   Clear / Export / Import / PDF / Delete
+======================================================= */
 $("#btnClear")?.addEventListener("click", async () => {
 	if (!confirm("Delete all locally stored data (duties, sleep, settings)?"))
 		return;
@@ -288,14 +274,13 @@ $("#btnExport")?.addEventListener("click", async () => {
 	});
 	const url = URL.createObjectURL(blob);
 	const a = document.createElement("a");
+	document.body.appendChild(a);
 	a.style.display = "none";
 	a.href = url;
 	a.download = `safair-duty-export-${new Date()
 		.toISOString()
 		.slice(0, 10)}.json`;
-	document.body.appendChild(a);
 	a.click();
-	a.remove();
 	URL.revokeObjectURL(url);
 });
 
@@ -334,7 +319,9 @@ $("#btnPDF")?.addEventListener("click", async () => {
 	await generatePDF(selected, all);
 });
 
-/* ======================== History click (delegation) ======================== */
+/* =======================================================
+   History selection (delegation) + keyboard
+======================================================= */
 $("#history")?.addEventListener("click", (e) => {
 	const li = e.target.closest("li[data-id]");
 	if (!li) return;
@@ -344,7 +331,6 @@ $("#history")?.addEventListener("click", (e) => {
 	refresh();
 });
 
-/* ======================== Keyboard shortcuts ======================== */
 document.addEventListener("keydown", async (e) => {
 	if (!["ArrowUp", "ArrowDown", "Delete"].includes(e.key)) return;
 	const all = await getAllDuty();
@@ -368,7 +354,9 @@ document.addEventListener("keydown", async (e) => {
 	refresh();
 });
 
-/* ======================== Boot / Refresh ======================== */
+/* =======================================================
+   Boot / Refresh
+======================================================= */
 async function boot() {
 	SETTINGS = await loadSettings();
 	if ($("#setChrono")) $("#setChrono").value = SETTINGS.chronotype;
@@ -377,10 +365,17 @@ async function boot() {
 			"#setBands"
 		).value = `${SETTINGS.bands.good},${SETTINGS.bands.caution},${SETTINGS.bands.elevated}`;
 
-	await setupSwUpdates(); // register + update checks + banner logic
-	await setVersionStamp(); // footer label from active SW (or fallback)
+	await setupSwUpdates();
+	await setVersionStamp();
+	await refreshSwBanner(); // in case everything already matches
 	await initTheme();
-	iosSplitDateTimeInputs(); // iPad-friendly date/time
+
+	// iOS-only date/time mask overlay (keeps fields readable)
+	enhanceDatetime("report");
+	enhanceDatetime("off");
+	enhanceDatetime("sleepStart");
+	enhanceDatetime("sleepEnd");
+
 	await refresh();
 }
 
@@ -406,21 +401,23 @@ async function refresh() {
 		renderLegality(selected, allDuty);
 		renderFatigue(selected, allSleep);
 	} else {
-		if ($("#legalityBadges")) $("#legalityBadges").innerHTML = "";
-		if ($("#fatigueGauge")) $("#fatigueGauge").textContent = "—";
-		if ($("#fatigueChips")) $("#fatigueChips").innerHTML = "";
-		if ($("#legalityNotes")) $("#legalityNotes").innerHTML = "";
+		$("#legalityBadges") && ($("#legalityBadges").innerHTML = "");
+		$("#fatigueGauge") && ($("#fatigueGauge").textContent = "—");
+		$("#fatigueChips") && ($("#fatigueChips").innerHTML = "");
+		$("#legalityNotes") && ($("#legalityNotes").innerHTML = "");
 	}
 }
 
-/* ======================== Advisory SP mapping + policy flags ======================== */
+/* =======================================================
+   Advisory SP mapping + policy flags
+======================================================= */
 function scoreToSP(score) {
 	const s = Math.max(0, Math.min(100, score));
 	if (s >= 90) return 2.0;
 	if (s >= 80) return 2.5;
 	if (s >= 70) return 3.2;
 	if (s >= 60) return 3.8;
-	if (s >= 50) return 4.6; // near 4.75 gate
+	if (s >= 50) return 4.6;
 	if (s >= 40) return 5.4;
 	if (s >= 30) return 6.0;
 	return 6.5;
@@ -442,7 +439,9 @@ function spsPolicyFlags({ spsAtSignOn, predictedSP }) {
 	return flags;
 }
 
-/* ======================== Legality ======================== */
+/* =======================================================
+   Legality
+======================================================= */
 function renderLegality(d, all) {
 	const badges = [];
 
@@ -515,14 +514,15 @@ function renderLegality(d, all) {
 	$("#legalityNotes").appendChild(p);
 }
 
-/* ======================== Fatigue ======================== */
+/* =======================================================
+   Fatigue
+======================================================= */
 function toneFromScore(score, bands) {
 	if (score < bands.elevated) return { tone: "bad", label: "High" };
 	if (score < bands.caution) return { tone: "warn", label: "Elevated" };
 	if (score < bands.good) return { tone: "warn", label: "Caution" };
 	return { tone: "ok", label: "Good" };
 }
-
 function renderFatigue(d, allSleep) {
 	const sleep = sleepMetricsForReport(allSleep, d.report);
 	const woclMins = woclOverlapMinutes(d.report, d.off, SETTINGS.chronotype);
@@ -544,7 +544,6 @@ function renderFatigue(d, allSleep) {
 	});
 
 	const gauge = $("#fatigueGauge");
-	if (!gauge) return;
 	const band = toneFromScore(score, SETTINGS.bands);
 	gauge.textContent = Math.round(score);
 	gauge.classList.remove("t-ok", "t-warn", "t-bad");
@@ -586,12 +585,10 @@ function renderFatigue(d, allSleep) {
 				"warn"
 			)
 		);
-
 	if (sps != null) {
 		const spsTone = sps >= 6 ? "bad" : sps >= 5 ? "warn" : undefined;
 		chips.push(chip(`SPS ${sps}`, spsTone));
 	}
-
 	const spPred = scoreToSP(score);
 	chips.push(
 		chip(
@@ -599,15 +596,16 @@ function renderFatigue(d, allSleep) {
 			spPred > 4.75 ? "warn" : undefined
 		)
 	);
-
 	const flags = spsPolicyFlags({ spsAtSignOn: sps, predictedSP: spPred });
 	for (const f of flags) chips.push(chip(f.text, f.level));
-
 	chips.push(chip(band.label, band.tone));
+
 	renderList($("#fatigueChips"), chips);
 }
 
-/* ======================== PDF ======================== */
+/* =======================================================
+   PDF
+======================================================= */
 async function generatePDF(latest, all) {
 	const sleepAll = await getAllSleep();
 	const { jsPDF } = window.jspdf;
@@ -662,7 +660,6 @@ async function generatePDF(latest, all) {
 	const actual = minutesBetween(latest.report, latest.off);
 	const remain = Math.max(0, limit - actual);
 	const over = Math.max(0, actual - limit);
-
 	doc.setFont("helvetica", "");
 	doc.text(
 		`FDP actual: ${minToHM(actual)}  |  FDP limit: ${minToHM(limit)}`,
@@ -791,7 +788,9 @@ async function generatePDF(latest, all) {
 	doc.save(`safair-duty-${latest.date}.pdf`);
 }
 
-/* ======================== History & list ======================== */
+/* =======================================================
+   History rendering
+======================================================= */
 function makeToggle(label) {
 	const btn = document.createElement("button");
 	btn.className = "btn ghost small";
@@ -799,7 +798,6 @@ function makeToggle(label) {
 	btn.textContent = label;
 	return btn;
 }
-
 function renderHistory(all) {
 	const wrap = $("#history");
 	if (!wrap) return;
@@ -838,95 +836,63 @@ function renderHistory(all) {
 	}
 }
 
-// iOS/iPad: replace each datetime-local with a Date + Time pair (no squashing, time always visible)
-function iosSplitDateTimeInputs() {
-	const isiOS =
+/* =======================================================
+   iOS-only datetime mask (keeps fields readable when blurred)
+======================================================= */
+function isIOS() {
+	return (
 		/iPad|iPhone|iPod/.test(navigator.userAgent) ||
-		(navigator.userAgent.includes("Mac") && "ontouchend" in document);
-	if (!isiOS) return;
+		(navigator.userAgent.includes("Mac") && navigator.maxTouchPoints > 1)
+	);
+}
+function formatDTLabel(iso) {
+	if (!iso || !DateTime) return "yyyy / mm / dd, --:--";
+	const dt = DateTime.fromISO(iso);
+	if (!dt.isValid) return "yyyy / mm / dd, --:--";
+	return dt.toFormat("dd LLL yyyy · HH:mm");
+}
+function enhanceDatetime(id) {
+	if (!isIOS()) return; // desktop keeps native look
+	const input = document.getElementById(id);
+	if (!input) return;
 
-	const FIELDS = [
-		{ id: "report" },
-		{ id: "off" },
-		{ id: "sleepStart" },
-		{ id: "sleepEnd" },
-	];
+	// Wrap
+	const wrap = document.createElement("span");
+	wrap.className = "dt-overlay";
+	input.parentNode.insertBefore(wrap, input);
+	wrap.appendChild(input);
 
-	// Parse "YYYY-MM-DDThh:mm" into parts
-	const splitISO = (iso) => {
-		if (!iso) return { d: "", t: "" };
-		const [d, t] = iso.split("T");
-		return { d: d || "", t: (t || "").slice(0, 5) };
+	// Mask
+	const mask = document.createElement("span");
+	mask.className = "dt-mask";
+	mask.textContent = input.value
+		? formatDTLabel(input.value)
+		: "yyyy / mm / dd, --:--";
+	wrap.appendChild(mask);
+
+	// State
+	const update = () => {
+		const hasVal = !!input.value;
+		wrap.classList.toggle("has-value", hasVal);
+		mask.textContent = hasVal
+			? formatDTLabel(input.value)
+			: "yyyy / mm / dd, --:--";
+	};
+	const open = () => wrap.classList.add("open");
+	const close = () => {
+		wrap.classList.remove("open");
+		update();
 	};
 
-	// Build "YYYY-MM-DDThh:mm" from parts (time optional)
-	const joinISO = (d, t) => (d ? d + "T" + (t || "00:00") : "");
+	input.addEventListener("focus", open);
+	input.addEventListener("blur", close);
+	input.addEventListener("change", update);
+	input.addEventListener("input", update);
 
-	for (const f of FIELDS) {
-		const hidden = document.getElementById(f.id);
-		if (!hidden) continue;
-
-		// Ensure it's the right type for consumers
-		hidden.type = "datetime-local";
-
-		// Wrap so we can place two visible controls
-		const wrap = document.createElement("div");
-		wrap.className = "dt-wrap";
-		hidden.parentElement.insertBefore(wrap, hidden);
-
-		// Visible date + time controls
-		const dateEl = document.createElement("input");
-		dateEl.type = "date";
-		dateEl.id = f.id + "_date";
-		dateEl.placeholder = "yyyy-mm-dd";
-
-		const timeEl = document.createElement("input");
-		timeEl.type = "time";
-		timeEl.step = "60"; // minute granularity
-		timeEl.id = f.id + "_time";
-		timeEl.placeholder = "--:--";
-
-		// Move hidden into wrapper and hide it
-		wrap.appendChild(dateEl);
-		wrap.appendChild(timeEl);
-		wrap.appendChild(hidden);
-		Object.assign(hidden.style, {
-			position: "absolute",
-			opacity: "0",
-			width: "0",
-			height: "0",
-			pointerEvents: "none",
-		});
-
-		// Init from existing value
-		const { d, t } = splitISO(hidden.value);
-		dateEl.value = d || "";
-		timeEl.value = t || "";
-
-		// Keep hidden ISO up to date
-		const syncHidden = () => {
-			hidden.value = joinISO(dateEl.value, timeEl.value);
-			hidden.dispatchEvent(new Event("input", { bubbles: true }));
-			hidden.dispatchEvent(new Event("change", { bubbles: true }));
-		};
-
-		dateEl.addEventListener("input", syncHidden);
-		timeEl.addEventListener("input", syncHidden);
-		dateEl.addEventListener("change", syncHidden);
-		timeEl.addEventListener("change", syncHidden);
-
-		// If a form reset happens, re-sync the visible parts
-		if (hidden.form) {
-			hidden.form.addEventListener("reset", () => {
-				requestAnimationFrame(() => {
-					const parts = splitISO(hidden.value);
-					dateEl.value = parts.d || "";
-					timeEl.value = parts.t || "";
-				});
-			});
-		}
-	}
+	update();
 }
 
-// Kick things off
+/* =======================================================
+   Kick things off
+======================================================= */
 boot();

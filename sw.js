@@ -1,23 +1,24 @@
-// sw.js — cache-first PWA SW tailored for GitHub Pages (user or project site)
-const CACHE = "safair-duty-v3.03"; // ← bump to force fresh asset pull
+// sw.js — cache-first PWA SW tailored for GitHub Pages
+const CACHE = "safair-duty-v3.04"; // ← bump each release
 
-// List assets relative to the repo root (no leading slash)
+// Assets relative to the repo root (no leading slash)
 const ASSETS = [
 	"index.html",
+	"manifest.webmanifest",
 	"assets/app.css",
 	"assets/app.js",
-	"assets/db.js",
 	"assets/calc.js",
+	"assets/db.js",
 	"assets/ui.js",
+	"assets/om_tables.js",
 	"vendor/dexie.min.js",
 	"vendor/luxon.min.js",
 	"vendor/jspdf.umd.min.js",
-	"manifest.webmanifest",
 	"icons/icon-192.png",
 	"icons/icon-512.png",
 ];
 
-// Resolve each asset against the SW scope (handles /<repo>/ correctly)
+// Resolve against SW scope so it works under /<repo> on GH Pages
 const SCOPE_URL = self.registration
 	? new URL(self.registration.scope)
 	: new URL("./", self.location);
@@ -34,43 +35,31 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
 	event.waitUntil(
-		(async () => {
-			// Clean old caches
-			const keys = await caches.keys();
-			await Promise.all(
-				keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))
-			);
-
-			// (Optional) speed up navigations when online
-			if (self.registration.navigationPreload) {
-				try {
-					await self.registration.navigationPreload.enable();
-				} catch {}
-			}
-
-			await self.clients.claim();
-		})()
+		caches
+			.keys()
+			.then((keys) =>
+				Promise.all(
+					keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))
+				)
+			)
+			.then(() => self.clients.claim())
 	);
 });
 
+// Navigation: network first → cache fallback (offline SPA)
 self.addEventListener("fetch", (event) => {
-	const { request } = event;
-	if (request.method !== "GET") return;
+	const req = event.request;
+	if (req.method !== "GET") return;
 
-	// Offline SPA navigation: fall back to cached index.html
-	if (request.mode === "navigate") {
+	if (req.mode === "navigate") {
 		event.respondWith(
 			(async () => {
 				try {
-					// If navigation preload is available, prefer it
-					const preload = await event.preloadResponse;
-					if (preload) return preload;
-					return await fetch(request);
+					return await fetch(req);
 				} catch {
 					const cache = await caches.open(CACHE);
 					const cachedIndex = await cache.match(
-						ASSET_URLS.find((u) => u.endsWith("/index.html")) ||
-							ASSET_URLS.find((u) => u.endsWith("index.html"))
+						ASSET_URLS.find((u) => u.endsWith("index.html"))
 					);
 					return cachedIndex || Response.error();
 				}
@@ -79,42 +68,33 @@ self.addEventListener("fetch", (event) => {
 		return;
 	}
 
-	// Cache-first for same-origin GETs, then network (runtime cache)
+	// Other GETs: cache-first, then network; runtime cache same-origin
 	event.respondWith(
 		(async () => {
-			const cached = await caches.match(request, { ignoreSearch: true });
+			const cached = await caches.match(req, { ignoreSearch: true });
 			if (cached) return cached;
-
-			const resp = await fetch(request);
+			const resp = await fetch(req);
 			try {
-				if (request.url.startsWith(self.location.origin)) {
+				if (req.url.startsWith(self.location.origin) && resp && resp.ok) {
 					const clone = resp.clone();
 					const cache = await caches.open(CACHE);
-					cache.put(request, clone);
+					cache.put(req, clone);
 				}
-			} catch {
-				/* ignore put errors */
-			}
+			} catch {}
 			return resp;
 		})()
 	);
 });
 
-// Messages from the page (update + version query)
+// Messages from the page (update handshake + version reporting)
 self.addEventListener("message", (e) => {
-	const data = e.data || {};
-	if (data.type === "SKIP_WAITING") {
-		self.skipWaiting();
-	}
-	if (data.type === "GET_VERSION") {
-		const payload = { cache: CACHE, scope: self.registration.scope };
-		if (e.ports && e.ports[0]) {
-			e.ports[0].postMessage(payload); // reply via MessageChannel
-		} else {
-			// broadcast (fallback)
-			self.clients.matchAll({ type: "window" }).then((clients) => {
-				clients.forEach((c) => c.postMessage({ type: "VERSION", ...payload }));
-			});
-		}
+	const msg = e.data || {};
+	if (msg.type === "SKIP_WAITING") self.skipWaiting();
+	if (msg.type === "GET_VERSION") {
+		// reply with cache label + scope
+		e.ports?.[0]?.postMessage({
+			cache: CACHE,
+			scope: self.registration?.scope,
+		});
 	}
 });
