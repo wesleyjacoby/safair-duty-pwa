@@ -163,7 +163,7 @@ input[type="datetime-local"],
 select,
 textarea {
 	width: 100%;
-	padding: 9px 12px;
+	padding: 11.5px 12px;
 	border: 1px solid var(--border);
 	background: var(--panel);
 	color: var(--text);
@@ -312,46 +312,50 @@ footer .btn {
 	outline-offset: 3px;
 }
 
-/* ---------- iOS-friendly size for date/time inputs ---------- */
-/* One place to control height for all controls */
+/* ---------- iOS-friendly size for date/time inputs (match other fields) ---------- */
 :root {
-	--control-h: 44px;
-} /* Apple HIG tap target */
+	--control-h: 40px;
+} /* same visual height as your other controls */
 
 input[type="date"],
 input[type="datetime-local"] {
 	height: var(--control-h);
-	min-height: var(--control-h); /* ensure it never collapses */
-	font-size: 16px; /* prevents iOS zoom-on-focus */
-	padding: 0 12px; /* outer padding still used */
+	min-height: var(--control-h);
+	padding: 9px 12px; /* keep the same left/right padding as others */
+	font-size: 14px; /* avoid iOS zoom-on-focus */
 }
 
-/* Make the inner editable area fill the whole control */
+/* IMPORTANT: don't stretch to 100%; just give a sensible min-width so it isn't a dash */
 input[type="date"]::-webkit-datetime-edit,
 input[type="datetime-local"]::-webkit-datetime-edit {
-	display: block;
-	min-width: 100%;
-	height: calc(var(--control-h) - 2px); /* minus borders */
-	line-height: calc(var(--control-h) - 2px);
-	padding: 0; /* we padded the outer input */
+	display: inline-flex;
+	align-items: center;
+	/* keep outer padding; don't set width:100% here */
 }
 
-/* Ensure the fields wrapper stretches too (prevents the “short dash” look) */
+/* Stop the “squashed dash” while empty */
+input[type="date"]::-webkit-datetime-edit {
+	min-width: 12ch;
+}
+input[type="datetime-local"]::-webkit-datetime-edit {
+	min-width: 22ch;
+}
+
+/* Keep the fields wrapper aligned */
 input[type="date"]::-webkit-datetime-edit-fields-wrapper,
 input[type="datetime-local"]::-webkit-datetime-edit-fields-wrapper {
-	display: flex;
+	display: inline-flex;
 	align-items: center;
-	width: 100%;
 }
 
-/* Tints while empty (iOS uses a glyph instead of placeholder) */
+/* Ghost tone while empty (iOS doesn’t show placeholders) */
 input[type="date"]:invalid::-webkit-datetime-edit,
 input[type="datetime-local"]:invalid::-webkit-datetime-edit {
 	color: var(--muted);
 	opacity: 0.9;
 }
 
-/* Slightly dim the separators inside the editor */
+/* Slightly dim the separators */
 input[type="date"]::-webkit-datetime-edit-text,
 input[type="datetime-local"]::-webkit-datetime-edit-text {
 	opacity: 0.7;
