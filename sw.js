@@ -86,15 +86,15 @@ self.addEventListener("fetch", (event) => {
 	);
 });
 
-// Messages from the page (update handshake + version reporting)
+// sw.js — add/confirm this message handler
 self.addEventListener("message", (e) => {
-	const msg = e.data || {};
-	if (msg.type === "SKIP_WAITING") self.skipWaiting();
-	if (msg.type === "GET_VERSION") {
-		// reply with cache label + scope
-		e.ports?.[0]?.postMessage({
-			cache: CACHE,
-			scope: self.registration?.scope,
-		});
+	const type = e.data && e.data.type;
+	if (type === "SKIP_WAITING") {
+		self.skipWaiting();
+	} else if (type === "GET_VERSION") {
+		// reply to the client with the current cache label
+		const port = e.ports && e.ports[0];
+		port &&
+			port.postMessage({ cache: CACHE, scope: self.registration?.scope || "" });
 	}
 });

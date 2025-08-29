@@ -29,9 +29,9 @@ import {
 import { badge, chip, $, renderList } from "./ui.js";
 
 /* ---------------- Release identifiers ---------------- */
-const SW_REG_VERSION = "3.4"; // used for ./sw.js?v=...  (bump on deploy)
-const EXPECTED_CACHE = "safair-duty-v3.4"; // must equal CACHE in sw.js
-const APP_VERSION = "v3.4"; // footer fallback if SW not ready
+const SW_REG_VERSION = "3.04"; // used for ./sw.js?v=...  (bump on deploy)
+const EXPECTED_CACHE = "safair-duty-v3.04"; // must equal CACHE in sw.js
+const APP_VERSION = "v3.04"; // footer fallback if SW not ready
 
 /* ---------------- Globals ---------------- */
 const { DateTime } = window.luxon || {};
@@ -108,9 +108,8 @@ function askSwVersion() {
 	});
 }
 async function refreshSwBanner() {
-	// Hide the banner if the active SW cache label matches EXPECTED_CACHE.
-	const meta = await askSwVersion(); // {cache, scope}
 	const hasCtrl = !!navigator.serviceWorker?.controller;
+	const meta = await askSwVersion(); // {cache, scope} or null
 	const upToDate = !!meta?.cache && meta.cache === EXPECTED_CACHE;
 	showUpdateBar(hasCtrl && !upToDate);
 }
@@ -138,41 +137,42 @@ async function setupSwUpdates() {
 	document
 		.getElementById("btnUpdateNow")
 		?.addEventListener("click", async () => {
-			const button = document.getElementById("btnUpdateNow");
-			if (button) {
-				button.disabled = true;
-				button.textContent = "Updating…";
+			const btn = document.getElementById("btnUpdateNow");
+			if (btn) {
+				btn.disabled = true;
+				btn.textContent = "Updating…";
 			}
+
 			try {
 				const r = await navigator.serviceWorker.getRegistration();
 				if (r?.waiting) {
 					r.waiting.postMessage({ type: "SKIP_WAITING" });
-					return; // controllerchange triggers reload
-				}
-				if (r?.installing) {
+				} else if (r?.installing) {
 					r.installing.addEventListener("statechange", () => {
 						if (r.installing?.state === "installed") {
 							r.waiting?.postMessage({ type: "SKIP_WAITING" });
 						}
 					});
-					return;
+				} else {
+					await r?.update?.();
+					setTimeout(() => window.location.reload(), 500);
 				}
-				await r?.update?.();
-				setTimeout(() => window.location.reload(), 400);
 			} catch {
 				window.location.reload();
 			}
+
+			// If Safari never fires controllerchange, force a reload anyway.
+			let forced = false;
+			navigator.serviceWorker.addEventListener("controllerchange", () => {
+				if (!forced) {
+					forced = true;
+					window.location.reload();
+				}
+			});
+			setTimeout(() => {
+				if (!forced) window.location.reload();
+			}, 1500);
 		});
-
-	// When the new SW takes control, reload to pick up fresh assets.
-	navigator.serviceWorker.addEventListener("controllerchange", () => {
-		window.location.reload();
-	});
-
-	// Recheck banner on visibility changes (helps iOS after backgrounding).
-	document.addEventListener("visibilitychange", () => {
-		if (document.visibilityState === "visible") refreshSwBanner();
-	});
 
 	reg.update?.();
 }

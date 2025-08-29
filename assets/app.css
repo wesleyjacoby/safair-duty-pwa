@@ -213,9 +213,14 @@ input[type="number"]::-webkit-inner-spin-button {
 .dt-overlay {
 	position: relative;
 	display: block;
+	width: 100%;
+	overflow: hidden;
+	isolation: isolate;
 }
 .dt-overlay > input[type="datetime-local"] {
 	position: relative;
+	height: 40px;
+	min-height: 40px;
 	z-index: 2;
 	background: var(--panel);
 }
@@ -227,6 +232,9 @@ input[type="number"]::-webkit-inner-spin-button {
 	padding: 11.5px 12px; /* match input padding */
 	color: var(--text);
 	pointer-events: none; /* touches go through */
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 	z-index: 3;
 	border-radius: 10px;
 }
