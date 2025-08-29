@@ -312,34 +312,38 @@ footer .btn {
 	outline-offset: 3px;
 }
 
-/* --- iOS Safari: widen empty date/time controls + ghost text tone --- */
+/* --- iOS Safari: make the inner date editor fill the input width --- */
 input[type="date"],
 input[type="datetime-local"] {
-	min-height: 40px; /* keep pills tall enough */
-}
+	min-height: 42px;
+} /* slightly taller for touch */
 
-/* Widen the inner editable area so it doesn't look squashed when empty */
 input[type="date"]::-webkit-datetime-edit,
 input[type="datetime-local"]::-webkit-datetime-edit {
-	padding: 0.45em 0.6em; /* a bit of breathing room */
+	width: 100%;
+	display: inline-block;
+	padding: 0.45em 0.75em; /* comfy insets */
 }
 
-/* Reasonable intrinsic widths for the inner editor */
-input[type="date"]::-webkit-datetime-edit {
-	min-width: 12ch;
-}
-input[type="datetime-local"]::-webkit-datetime-edit {
-	min-width: 20ch;
+input[type="date"]::-webkit-datetime-edit-fields-wrapper,
+input[type="datetime-local"]::-webkit-datetime-edit-fields-wrapper {
+	width: 100%;
+	display: inline-flex;
 }
 
-/* When the control has no value (invalid), tint the ghost text */
+input[type="date"]::-webkit-date-and-time-value,
+input[type="datetime-local"]::-webkit-date-and-time-value {
+	display: inline-block;
+	min-width: 100%;
+}
+
+/* Keep the muted “ghost” tone until valid */
 input[type="date"]:invalid::-webkit-datetime-edit,
 input[type="datetime-local"]:invalid::-webkit-datetime-edit {
 	color: var(--muted);
-	opacity: 0.85;
+	opacity: 0.9;
 }
 
-/* Optional: slightly dim the separators inside the editor */
 input[type="date"]::-webkit-datetime-edit-text,
 input[type="datetime-local"]::-webkit-datetime-edit-text {
 	opacity: 0.7;
