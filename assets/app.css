@@ -312,31 +312,27 @@ footer .btn {
 	outline-offset: 3px;
 }
 
-/* ---------- iOS-friendly date/time that matches other fields ---------- */
+/* ---------- iPad/iOS date & datetime-local: match other inputs and hide the dash ---------- */
 :root {
 	--control-h: 40px;
-} /* keep consistent with other inputs */
+} /* same visual height as other fields */
 
 input[type="date"],
 input[type="datetime-local"] {
 	height: var(--control-h);
 	min-height: var(--control-h);
-	padding: 9px 12px; /* same as other fields */
-	font-size: 16px; /* avoid iOS zoom-on-focus */
+	padding: 9px 12px; /* same padding as your other inputs */
+	font-size: 16px; /* prevents iOS zoom-on-focus */
 }
 
-/* Prevent the “tiny dash” look while empty, but DON'T stretch to 100% */
+/* Keep the inner editor aligned nicely (no stretching) */
 input[type="date"]::-webkit-datetime-edit,
 input[type="datetime-local"]::-webkit-datetime-edit {
 	display: inline-flex;
 	align-items: center;
-	min-width: 12ch; /* date */
-}
-input[type="datetime-local"]::-webkit-datetime-edit {
-	min-width: 22ch;
 }
 
-/* Give the individual fields a bit of breathing room */
+/* Subtle spacing between the segments when a value exists */
 input[type="date"]::-webkit-datetime-edit-year-field,
 input[type="date"]::-webkit-datetime-edit-month-field,
 input[type="date"]::-webkit-datetime-edit-day-field,
@@ -347,19 +343,26 @@ input[type="datetime-local"]::-webkit-datetime-edit-hour-field,
 input[type="datetime-local"]::-webkit-datetime-edit-minute-field,
 input[type="datetime-local"]::-webkit-datetime-edit-second-field,
 input[type="datetime-local"]::-webkit-datetime-edit-ampm-field {
-	padding: 0 2px; /* subtle spacing between segments */
+	padding: 0 2px;
 }
 
-/* Slightly soften the separators too */
-input[type="date"]::-webkit-datetime-edit-text,
-input[type="datetime-local"]::-webkit-datetime-edit-text {
-	margin: 0 1px;
-	opacity: 0.75;
+/* --- The key bit: hide the tiny baseline glyph when the field is empty --- */
+input[type="date"]:not(:focus):invalid::-webkit-datetime-edit,
+input[type="datetime-local"]:not(:focus):invalid::-webkit-datetime-edit,
+input[type="date"]:not(:focus):invalid::-webkit-datetime-edit-text,
+input[type="datetime-local"]:not(:focus):invalid::-webkit-datetime-edit-text {
+	color: transparent; /* hides the “—” dash iOS shows */
 }
 
-/* Muted tone while empty (iOS doesn't show placeholders) */
-input[type="date"]:invalid::-webkit-datetime-edit,
-input[type="datetime-local"]:invalid::-webkit-datetime-edit {
+/* When focused but still empty, show a muted hint tone (optional) */
+input[type="date"]:focus:invalid::-webkit-datetime-edit,
+input[type="datetime-local"]:focus:invalid::-webkit-datetime-edit {
 	color: var(--muted);
 	opacity: 0.9;
+}
+
+/* Slightly soften separators when a value exists */
+input[type="date"]::-webkit-datetime-edit-text,
+input[type="datetime-local"]::-webkit-datetime-edit-text {
+	opacity: 0.75;
 }
