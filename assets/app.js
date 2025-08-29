@@ -28,9 +28,9 @@ import {
 import { badge, chip, $, renderList } from "./ui.js";
 
 // --- Release identifiers (keep in sync with sw.js) ---
-const SW_REG_VERSION = "2.8"; // used for ./sw.js?v=...
-const EXPECTED_CACHE = "safair-duty-v2.8"; // must equal CACHE in sw.js
-const APP_VERSION = "v2.8"; // fallback label
+const SW_REG_VERSION = "2.9"; // used for ./sw.js?v=...
+const EXPECTED_CACHE = "safair-duty-v2.9"; // must equal CACHE in sw.js
+const APP_VERSION = "v2.9"; // fallback label
 
 let deferredPrompt = null;
 let SETTINGS = null;
