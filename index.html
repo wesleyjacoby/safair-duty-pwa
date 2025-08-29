@@ -25,7 +25,7 @@
     <script defer src="vendor/dexie.min.js"></script>
     <script defer src="vendor/jspdf.umd.min.js"></script>
 
-    <!-- App -->
+    <!-- App (handles SW registration & updates internally) -->
     <script type="module" src="assets/app.js"></script>
 </head>
 
@@ -179,21 +179,9 @@
     </footer>
 
     <!-- Update-available banner -->
-    <div id="updateBar" class="panel container" role="status" aria-live="polite">
+    <div id="updateBar" class="panel container" role="status" aria-live="polite" style="display:none">
         A new version is available.
         <button id="btnUpdateNow" class="btn primary small">Reload</button>
     </div>
-
-    <!-- SW registration -->
-    <script>
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', async () => {
-                const v = '1.5'; // bump when you release
-                const reg = await navigator.serviceWorker.register('./sw.js?v=' + v);
-                reg.update?.(); // ask the browser to check now
-            });
-        }
-    </script>
-
 </body>
 </html>

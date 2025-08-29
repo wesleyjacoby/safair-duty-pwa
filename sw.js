@@ -1,5 +1,5 @@
 // sw.js — cache-first PWA SW tailored for GitHub Pages (user or project site)
-const CACHE = "safair-duty-v2.0"; // bump to force fresh asset pull
+const CACHE = "safair-duty-v2.1"; // ← bump to force fresh asset pull
 
 // List assets relative to the repo root (no leading slash)
 const ASSETS = [
@@ -13,7 +13,8 @@ const ASSETS = [
 	"vendor/luxon.min.js",
 	"vendor/jspdf.umd.min.js",
 	"manifest.webmanifest",
-	"icons/icon-192.png", // add other icons if you have them (e.g., icon-512.png)
+	"icons/icon-192.png",
+	"icons/icon-512.png",
 ];
 
 // Resolve each asset against the SW scope (handles /<repo>/ correctly)
@@ -33,14 +34,22 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
 	event.waitUntil(
-		caches
-			.keys()
-			.then((keys) =>
-				Promise.all(
-					keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))
-				)
-			)
-			.then(() => self.clients.claim())
+		(async () => {
+			// Clean old caches
+			const keys = await caches.keys();
+			await Promise.all(
+				keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))
+			);
+
+			// (Optional) speed up navigations when online
+			if (self.registration.navigationPreload) {
+				try {
+					await self.registration.navigationPreload.enable();
+				} catch {}
+			}
+
+			await self.clients.claim();
+		})()
 	);
 });
 
@@ -53,7 +62,9 @@ self.addEventListener("fetch", (event) => {
 		event.respondWith(
 			(async () => {
 				try {
-					// Try network first for navigations
+					// If navigation preload is available, prefer it
+					const preload = await event.preloadResponse;
+					if (preload) return preload;
 					return await fetch(request);
 				} catch {
 					const cache = await caches.open(CACHE);
@@ -89,7 +100,21 @@ self.addEventListener("fetch", (event) => {
 	);
 });
 
-// Allow page to tell the SW to activate immediately when an update is found
+// Messages from the page (update + version query)
 self.addEventListener("message", (e) => {
-	if (e.data && e.data.type === "SKIP_WAITING") self.skipWaiting();
+	const data = e.data || {};
+	if (data.type === "SKIP_WAITING") {
+		self.skipWaiting();
+	}
+	if (data.type === "GET_VERSION") {
+		const payload = { cache: CACHE, scope: self.registration.scope };
+		if (e.ports && e.ports[0]) {
+			e.ports[0].postMessage(payload); // reply via MessageChannel
+		} else {
+			// broadcast (fallback)
+			self.clients.matchAll({ type: "window" }).then((clients) => {
+				clients.forEach((c) => c.postMessage({ type: "VERSION", ...payload }));
+			});
+		}
+	}
 });

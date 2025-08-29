@@ -27,7 +27,8 @@ import {
 
 import { badge, chip, $, renderList } from "./ui.js";
 
-const APP_VERSION = "v1.1.0 (2025-08-29)";
+// Fallback app version label (footer/PDF will try to read from SW first)
+const APP_VERSION = "v2.1";
 
 let deferredPrompt = null;
 let SETTINGS = null;
@@ -84,29 +85,78 @@ $("#btnInstall")?.addEventListener("click", async () => {
 	$("#btnInstall").disabled = true;
 });
 
-/* ======================== Update-available banner ======================== */
-if ("serviceWorker" in navigator) {
-	navigator.serviceWorker.getRegistration().then((reg) => {
-		if (!reg) return;
-		reg.addEventListener("updatefound", () => {
-			const sw = reg.installing;
-			sw?.addEventListener("statechange", () => {
-				if (sw.state === "installed" && navigator.serviceWorker.controller) {
-					const bar = $("#updateBar");
-					if (bar) bar.style.display = "flex";
-				}
-			});
+/* ======================== Service Worker: updates ======================== */
+function showUpdateBar(show = true) {
+	const bar = document.getElementById("updateBar");
+	if (!bar) return;
+	bar.style.display = show ? "flex" : "none";
+}
+
+async function setupSwUpdates() {
+	if (!("serviceWorker" in navigator)) return;
+
+	// Register with a versioned URL so GH Pages doesn’t cache sw.js
+	const SW_REG_VERSION = "2.1"; // bump when you bump CACHE in sw.js
+	const reg = await navigator.serviceWorker.register(
+		"./sw.js?v=" + SW_REG_VERSION
+	);
+
+	// If an update is already waiting, show the banner
+	if (reg.waiting && navigator.serviceWorker.controller) showUpdateBar(true);
+
+	// Listen for freshly found updates
+	reg.addEventListener("updatefound", () => {
+		const sw = reg.installing;
+		if (!sw) return;
+		sw.addEventListener("statechange", () => {
+			if (sw.state === "installed" && navigator.serviceWorker.controller) {
+				showUpdateBar(true);
+			}
 		});
 	});
 
-	$("#btnUpdateNow")?.addEventListener("click", async () => {
-		const reg = await navigator.serviceWorker.getRegistration();
-		reg?.waiting?.postMessage({ type: "SKIP_WAITING" });
+	// “Reload” button → activate the new SW
+	document
+		.getElementById("btnUpdateNow")
+		?.addEventListener("click", async () => {
+			const r = await navigator.serviceWorker.getRegistration();
+			r?.waiting?.postMessage({ type: "SKIP_WAITING" });
+		});
+
+	// When the new SW takes control, reload to pick up fresh assets
+	navigator.serviceWorker.addEventListener("controllerchange", () => {
+		window.location.reload();
 	});
 
-	navigator.serviceWorker.addEventListener("controllerchange", () =>
-		location.reload()
-	);
+	// Ask the browser to check for updates on load
+	reg.update?.();
+}
+
+/* ======================== Version stamp ======================== */
+function askSwVersion() {
+	return new Promise(async (resolve) => {
+		try {
+			const reg = await navigator.serviceWorker.getRegistration();
+			if (!reg?.active) return resolve(null);
+			const ch = new MessageChannel();
+			ch.port1.onmessage = (ev) => resolve(ev.data || null);
+			reg.active.postMessage({ type: "GET_VERSION" }, [ch.port2]);
+		} catch {
+			resolve(null);
+		}
+	});
+}
+
+async function setVersionStamp() {
+	const el = document.getElementById("versionStamp");
+	if (!el) return;
+
+	let label = APP_VERSION;
+	const meta = await askSwVersion(); // { cache: "...", scope: "..." }
+	if (meta?.cache) label = meta.cache;
+
+	const today = new Date().toISOString().slice(0, 10);
+	el.textContent = `${label} (${today})`;
 }
 
 /* ======================== Settings form ======================== */
@@ -269,17 +319,19 @@ document.addEventListener("keydown", async (e) => {
 
 /* ======================== Boot / Refresh ======================== */
 async function boot() {
+	// Load settings for forms
 	SETTINGS = await loadSettings();
-	$("#setChrono") && ($("#setChrono").value = SETTINGS.chronotype);
-	$("#setBands") &&
-		($(
+	if ($("#setChrono")) $("#setChrono").value = SETTINGS.chronotype;
+	if ($("#setBands"))
+		$(
 			"#setBands"
-		).value = `${SETTINGS.bands.good},${SETTINGS.bands.caution},${SETTINGS.bands.elevated}`);
+		).value = `${SETTINGS.bands.good},${SETTINGS.bands.caution},${SETTINGS.bands.elevated}`;
 
-	const v = $("#versionStamp");
-	if (v) v.textContent = APP_VERSION;
-
+	// Register SW, then set version from SW, then theme/init
+	await setupSwUpdates();
+	await setVersionStamp();
 	await initTheme();
+
 	await refresh();
 }
 
@@ -305,10 +357,10 @@ async function refresh() {
 		renderLegality(selected, allDuty);
 		renderFatigue(selected, allSleep);
 	} else {
-		$("#legalityBadges") && ($("#legalityBadges").innerHTML = "");
-		$("#fatigueGauge") && ($("#fatigueGauge").textContent = "—");
-		$("#fatigueChips") && ($("#fatigueChips").innerHTML = "");
-		$("#legalityNotes") && ($("#legalityNotes").innerHTML = "");
+		if ($("#legalityBadges")) $("#legalityBadges").innerHTML = "";
+		if ($("#fatigueGauge")) $("#fatigueGauge").textContent = "—";
+		if ($("#fatigueChips")) $("#fatigueChips").innerHTML = "";
+		if ($("#legalityNotes")) $("#legalityNotes").innerHTML = "";
 	}
 }
 
@@ -468,7 +520,6 @@ function renderFatigue(d, allSleep) {
 	const chips = [];
 
 	// Core context chips (with light heuristics for tone)
-	// Sleep last 24h
 	chips.push(
 		chip(
 			`Sleep 24h: ${sleep.priorSleep24}h`,
@@ -479,7 +530,6 @@ function renderFatigue(d, allSleep) {
 				: undefined
 		)
 	);
-	// Wakefulness
 	chips.push(chip(`Since wake @ report: ${awake.sinceWakeAtReport}h`));
 	chips.push(chip(`Since wake @ off: ${awake.sinceWakeAtOff}h`));
 	chips.push(
@@ -494,7 +544,6 @@ function renderFatigue(d, allSleep) {
 				: undefined
 		)
 	);
-	// WOCL
 	if (woclMins > 0)
 		chips.push(
 			chip(
@@ -505,7 +554,6 @@ function renderFatigue(d, allSleep) {
 			)
 		);
 
-	// SPS
 	if (sps != null) {
 		const spsTone = sps >= 6 ? "bad" : sps >= 5 ? "warn" : undefined;
 		chips.push(chip(`SPS ${sps}`, spsTone));
@@ -521,9 +569,7 @@ function renderFatigue(d, allSleep) {
 	);
 
 	const flags = spsPolicyFlags({ spsAtSignOn: sps, predictedSP: spPred });
-	for (const f of flags) {
-		chips.push(chip(f.text, f.level)); // f.level is "warn" or "bad"
-	}
+	for (const f of flags) chips.push(chip(f.text, f.level)); // f.level is "warn" or "bad"
 
 	// Band chip (Good/Caution/Elevated/High), colored
 	chips.push(chip(band.label, band.tone));
@@ -555,6 +601,10 @@ async function generatePDF(latest, all) {
 	);
 	const sps = latest.sps || null;
 
+	// Prefer SW cache label for version (matches footer), fallback to APP_VERSION
+	const meta = await askSwVersion();
+	const versionLabel = meta?.cache || APP_VERSION;
+
 	doc.setFont("helvetica", "bold");
 	doc.setFontSize(18);
 	doc.text("Safair Duty & Fatigue Summary", pad, y);
@@ -562,7 +612,7 @@ async function generatePDF(latest, all) {
 
 	doc.setFontSize(12);
 	doc.setFont("helvetica", "");
-	doc.text(`Version: ${APP_VERSION}`, pad, y);
+	doc.text(`Version: ${versionLabel}`, pad, y);
 	y += 14;
 	doc.text(`Date: ${latest.date}`, pad, y);
 	y += 14;
@@ -761,4 +811,5 @@ function renderHistory(all) {
 	}
 }
 
+// Kick things off
 boot();
