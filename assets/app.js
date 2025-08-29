@@ -28,9 +28,9 @@ import {
 import { badge, chip, $, renderList } from "./ui.js";
 
 // --- Release identifiers (keep in sync with sw.js) ---
-const SW_REG_VERSION = "2.99"; // used for ./sw.js?v=...
-const EXPECTED_CACHE = "safair-duty-v2.99"; // must equal CACHE in sw.js
-const APP_VERSION = "v2.99"; // fallback label
+const SW_REG_VERSION = "3.0"; // used for ./sw.js?v=...
+const EXPECTED_CACHE = "safair-duty-v3.0"; // must equal CACHE in sw.js
+const APP_VERSION = "v3.0"; // fallback label
 
 let deferredPrompt = null;
 let SETTINGS = null;
@@ -856,28 +856,35 @@ function iosProxyDateInputs() {
 		// Fallback formatter
 		if (iso.includes("T")) {
 			const [d, t] = iso.split("T");
-			return `${d.replaceAll("-", " / ")} , ${t.slice(0, 5)}`;
+			return `${d
+				.split("-")
+				.reverse()
+				.join(" ")
+				.replace(/(\d{2}) (\d{2}) (\d{4})/, "$1 $2 $3")}, ${t.slice(0, 5)}`;
 		}
-		return iso.replaceAll("-", " / ");
+		return iso.split("-").reverse().join(" ");
 	};
 
 	for (const f of FIELDS) {
 		const native = document.getElementById(f.id);
 		if (!native) continue;
 
+		// Ensure correct native type and minute granularity
 		native.type = f.type;
-		native.step = "60"; // ensure minutes are part of the value
+		native.step = "60";
 
-		// Wrap so we can stack the inputs
+		// Wrapper to stack proxy + native
 		const wrapper = document.createElement("div");
 		wrapper.style.position = "relative";
 		wrapper.style.width = "100%";
 
-		// Visible proxy (pretty text field)
+		// Visible proxy (styled like your inputs)
 		const proxy = document.createElement("input");
 		proxy.type = "text";
 		proxy.id = f.id + "_display";
 		proxy.placeholder = f.ph;
+		proxy.autocomplete = "off";
+		proxy.inputMode = "none"; // avoid keyboard on iOS
 		proxy.value = native.value ? formatDisplay(native.value, f.type) : "";
 
 		// Insert: wrapper → proxy + native
@@ -885,7 +892,7 @@ function iosProxyDateInputs() {
 		wrapper.appendChild(proxy);
 		wrapper.appendChild(native);
 
-		// Native covers the proxy but is invisible; taps open the picker
+		// Native overlays proxy but is invisible; taps open the picker
 		Object.assign(native.style, {
 			position: "absolute",
 			inset: "0",
@@ -896,25 +903,38 @@ function iosProxyDateInputs() {
 			background: "transparent",
 		});
 
-		// Keep proxy in sync with native (RAF to wait for WebKit to apply the value)
-		const sync = () =>
+		// Remember last picked time per field (used if iOS gives us date-only)
+		if (native.value && native.value.includes("T")) {
+			native.dataset.hhmm = native.value.split("T")[1].slice(0, 5);
+		} else {
+			native.dataset.hhmm = "00:00"; // change to your preferred default if you like
+		}
+
+		// Ensure datetime-local always has a time part; then update proxy
+		const ensureTimeThenSync = () =>
 			requestAnimationFrame(() => {
-				const v = native.value || "";
-				if (!v) {
-					proxy.value = "";
-					return;
+				let v = native.value || "";
+				if (f.type === "datetime-local" && v && !v.includes("T")) {
+					// date-only -> append last hh:mm (or default)
+					const hhmm = native.dataset.hhmm || "00:00";
+					v = v + "T" + hhmm;
+					native.value = v;
 				}
-				const hasTime = /\dT\d{2}:\d{2}/.test(v);
-				proxy.value = hasTime
-					? formatDisplay(v, f.type)
-					: formatDisplay(v, "date") + ", --:--";
+				if (v.includes("T")) {
+					native.dataset.hhmm = v.split("T")[1].slice(0, 5); // remember for next time
+					proxy.value = formatDisplay(v, f.type);
+				} else if (v) {
+					proxy.value = formatDisplay(v, "date") + ", --:--";
+				} else {
+					proxy.value = "";
+				}
 			});
 
-		native.addEventListener("input", sync);
-		native.addEventListener("change", sync);
-		native.addEventListener("blur", sync);
+		native.addEventListener("input", ensureTimeThenSync);
+		native.addEventListener("change", ensureTimeThenSync);
+		native.addEventListener("blur", ensureTimeThenSync);
 
-		// If the proxy is cleared manually, clear the native too
+		// If user clears the proxy, clear native too
 		proxy.addEventListener("input", () => {
 			if (proxy.value === "") {
 				native.value = "";
@@ -922,10 +942,15 @@ function iosProxyDateInputs() {
 			}
 		});
 
-		// After form reset, clear text value too
+		// After form reset, re-sync
 		if (native.form) {
-			native.form.addEventListener("reset", () => requestAnimationFrame(sync));
+			native.form.addEventListener("reset", () =>
+				requestAnimationFrame(ensureTimeThenSync)
+			);
 		}
+
+		// Initial paint
+		ensureTimeThenSync();
 	}
 }
 
