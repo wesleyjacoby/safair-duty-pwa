@@ -348,3 +348,21 @@ input[type="date"]::-webkit-datetime-edit-text,
 input[type="datetime-local"]::-webkit-datetime-edit-text {
 	opacity: 0.7;
 }
+
+/* Faux placeholder for date/datetime (injected via JS) */
+label {
+	position: relative;
+} /* so hints can be positioned */
+.date-hint {
+	position: absolute;
+	pointer-events: none;
+	color: var(--muted);
+	opacity: 0.85;
+	font-size: 14px;
+	line-height: 1;
+	transition: opacity 0.12s ease, transform 0.12s ease;
+}
+label[data-has-value="1"] .date-hint {
+	opacity: 0;
+	transform: translateY(-2px);
+}

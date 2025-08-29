@@ -28,9 +28,9 @@ import {
 import { badge, chip, $, renderList } from "./ui.js";
 
 // --- Release identifiers (keep in sync with sw.js) ---
-const SW_REG_VERSION = "2.5"; // used for ./sw.js?v=...
-const EXPECTED_CACHE = "safair-duty-v2.5"; // must equal CACHE in sw.js
-const APP_VERSION = "v2.5"; // fallback label
+const SW_REG_VERSION = "2.6"; // used for ./sw.js?v=...
+const EXPECTED_CACHE = "safair-duty-v2.6"; // must equal CACHE in sw.js
+const APP_VERSION = "v2.6"; // fallback label
 
 let deferredPrompt = null;
 let SETTINGS = null;
@@ -331,6 +331,7 @@ async function boot() {
 	await setupSwUpdates(); // register + update checks + banner logic
 	await setVersionStamp(); // footer label from active SW (or fallback)
 	await initTheme();
+	attachDateHints();
 
 	await refresh();
 }
@@ -785,6 +786,43 @@ function renderHistory(all) {
 			renderHistory(all);
 		});
 		wrap.appendChild(btn);
+	}
+}
+
+function attachDateHints() {
+	const inputs = document.querySelectorAll(
+		'label > input[type="date"], label > input[type="datetime-local"]'
+	);
+	for (const input of inputs) {
+		const label = input.closest("label");
+		if (!label || label.querySelector(".date-hint")) continue;
+
+		const hint = document.createElement("span");
+		hint.className = "date-hint";
+		hint.textContent =
+			input.type === "date" ? "YYYY / mm / dd" : "YYYY / mm / dd — hh:mm";
+		label.appendChild(hint);
+
+		// Place the hint centered vertically inside the input
+		const place = () => {
+			const r = input.getBoundingClientRect();
+			const lr = label.getBoundingClientRect();
+			const top = input.offsetTop + (input.offsetHeight - 14) / 2; // 14 ≈ font-size
+			hint.style.left = input.offsetLeft + 12 + "px";
+			hint.style.top = top + "px";
+		};
+
+		const update = () => {
+			label.setAttribute("data-has-value", input.value ? "1" : "0");
+		};
+
+		place();
+		update();
+		window.addEventListener("resize", place, { passive: true });
+		input.addEventListener("input", update);
+		input.addEventListener("change", update);
+		input.addEventListener("focus", () => (hint.style.opacity = "0"));
+		input.addEventListener("blur", () => update());
 	}
 }
 
