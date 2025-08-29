@@ -241,6 +241,31 @@ input[type="number"]::-webkit-inner-spin-button {
 	color: var(--bad);
 }
 
+/* --- Fatigue gauge tones --- */
+#fatigueGauge.t-ok {
+	color: var(--ok);
+}
+#fatigueGauge.t-warn {
+	color: var(--warn);
+}
+#fatigueGauge.t-bad {
+	color: var(--bad);
+}
+
+/* --- Chip tones (badges already have .ok/.warn/.bad) --- */
+.chip.ok {
+	border-color: var(--ok);
+	color: var(--ok);
+}
+.chip.warn {
+	border-color: var(--warn);
+	color: var(--warn);
+}
+.chip.bad {
+	border-color: var(--bad);
+	color: var(--bad);
+}
+
 /* ---------- History ---------- */
 #history ul {
 	list-style: none;

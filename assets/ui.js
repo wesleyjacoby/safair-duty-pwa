@@ -1,17 +1,25 @@
-export const $ = (sel, el = document) => el.querySelector(sel);
-export function badge(text, tone = "") {
-	const span = document.createElement("span");
-	span.className = `badge ${tone}`;
-	span.textContent = text;
-	return span;
+// assets/ui.js
+export const $ = (sel) => document.querySelector(sel);
+
+export function badge(text, tone /* "ok" | "warn" | "bad" */) {
+	const el = document.createElement("span");
+	el.className = "badge" + (tone ? " " + tone : "");
+	el.textContent = text;
+	return el;
 }
-export function chip(text) {
-	const span = document.createElement("span");
-	span.className = "chip";
-	span.textContent = text;
-	return span;
+
+export function chip(text, tone /* optional: "ok" | "warn" | "bad" */) {
+	const el = document.createElement("span");
+	el.className = "chip" + (tone ? " " + tone : "");
+	el.textContent = text;
+	return el;
 }
-export function renderList(container, items) {
+
+export function renderList(container, nodes) {
+	if (!container) return;
 	container.innerHTML = "";
-	items.forEach((n) => container.appendChild(n));
+	for (const n of nodes) {
+		if (n == null) continue;
+		container.appendChild(n.nodeType ? n : document.createTextNode(String(n)));
+	}
 }

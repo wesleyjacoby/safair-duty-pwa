@@ -427,6 +427,15 @@ function renderLegality(d, all) {
 }
 
 /* ======================== Fatigue ======================== */
+function toneFromScore(score, bands) {
+	// bands: { good, caution, elevated }
+	// High (worst) should be red; Elevated/Caution amber; Good green.
+	if (score < bands.elevated) return { tone: "bad", label: "High" };
+	if (score < bands.caution) return { tone: "warn", label: "Elevated" };
+	if (score < bands.good) return { tone: "warn", label: "Caution" };
+	return { tone: "ok", label: "Good" };
+}
+
 function renderFatigue(d, allSleep) {
 	const sleep = sleepMetricsForReport(allSleep, d.report);
 	const woclMins = woclOverlapMinutes(d.report, d.off, SETTINGS.chronotype);
@@ -447,43 +456,77 @@ function renderFatigue(d, allSleep) {
 		sps,
 	});
 
-	$("#fatigueGauge").textContent = Math.round(score);
+	// Gauge color by band
+	const gauge = $("#fatigueGauge");
+	const band = toneFromScore(score, SETTINGS.bands);
+	gauge.textContent = Math.round(score);
+	gauge.classList.remove("t-ok", "t-warn", "t-bad");
+	gauge.classList.add(
+		band.tone === "ok" ? "t-ok" : band.tone === "warn" ? "t-warn" : "t-bad"
+	);
 
 	const chips = [];
-	chips.push(chip(`Sleep 24h: ${sleep.priorSleep24}h`));
+
+	// Core context chips (with light heuristics for tone)
+	// Sleep last 24h
+	chips.push(
+		chip(
+			`Sleep 24h: ${sleep.priorSleep24}h`,
+			sleep.priorSleep24 < 4
+				? "bad"
+				: sleep.priorSleep24 < 6
+				? "warn"
+				: undefined
+		)
+	);
+	// Wakefulness
 	chips.push(chip(`Since wake @ report: ${awake.sinceWakeAtReport}h`));
 	chips.push(chip(`Since wake @ off: ${awake.sinceWakeAtOff}h`));
 	chips.push(
 		chip(
 			`Until next sleep: ${awake.untilNextSleep}h${
 				awake.usedEstimate ? " (est.)" : ""
-			}`
+			}`,
+			awake.untilNextSleep > 18
+				? "bad"
+				: awake.untilNextSleep > 16
+				? "warn"
+				: undefined
 		)
 	);
+	// WOCL
 	if (woclMins > 0)
 		chips.push(
 			chip(
-				`WOCL: ${woclMins}m ${
-					SETTINGS.chronotype !== "neutral" ? `(${SETTINGS.chronotype})` : ""
-				}`
+				`WOCL: ${woclMins}m${
+					SETTINGS.chronotype !== "neutral" ? ` (${SETTINGS.chronotype})` : ""
+				}`,
+				"warn"
 			)
 		);
-	if (sps != null) chips.push(chip(`SPS ${sps}`));
 
-	// Advisory predicted SP + policy flags
-	const spPred = scoreToSP(score);
-	chips.push(chip(`Predicted SP ~ ${spPred.toFixed(2)} (advisory)`));
-	const flags = spsPolicyFlags({ spsAtSignOn: sps, predictedSP: spPred });
-	for (const f of flags) {
-		// Use chip for message; tone is implied by wording (bad/warn)
-		chips.push(chip(f.text));
+	// SPS
+	if (sps != null) {
+		const spsTone = sps >= 6 ? "bad" : sps >= 5 ? "warn" : undefined;
+		chips.push(chip(`SPS ${sps}`, spsTone));
 	}
 
-	const { good, caution, elevated } = SETTINGS.bands;
-	if (score < elevated) chips.push(chip("High"));
-	else if (score < caution) chips.push(chip("Elevated"));
-	else if (score < good) chips.push(chip("Caution"));
-	else chips.push(chip("Good"));
+	// Advisory predicted SP + policy flags (color the advisories too)
+	const spPred = scoreToSP(score);
+	chips.push(
+		chip(
+			`Predicted SP ~ ${spPred.toFixed(2)} (advisory)`,
+			spPred > 4.75 ? "warn" : undefined
+		)
+	);
+
+	const flags = spsPolicyFlags({ spsAtSignOn: sps, predictedSP: spPred });
+	for (const f of flags) {
+		chips.push(chip(f.text, f.level)); // f.level is "warn" or "bad"
+	}
+
+	// Band chip (Good/Caution/Elevated/High), colored
+	chips.push(chip(band.label, band.tone));
 
 	renderList($("#fatigueChips"), chips);
 }
