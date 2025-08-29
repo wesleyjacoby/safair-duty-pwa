@@ -312,39 +312,34 @@ footer .btn {
 	outline-offset: 3px;
 }
 
-/* === iPad/iOS date & datetime-local: match other inputs exactly === */
-
-/* Use the same visual metrics as your other inputs (11.5px/12px, 15px font) */
+/* === Final normalisation for iPad/iOS date & datetime-local === */
+/* Render them like normal text inputs (same height, padding, font) */
 input[type="date"],
 input[type="datetime-local"] {
-	height: auto; /* don't force a tall box */
+	-webkit-appearance: none; /* turn off iOS' oversized control */
+	appearance: none;
+	font: inherit; /* 15px/1.6, same as other inputs */
+	line-height: 1.6;
+	padding: 11.5px 12px; /* identical to your base inputs */
+	height: auto;
 	min-height: 0;
-	padding: 11.5px 12px; /* match your base input rule */
-	font: inherit; /* pick up 15px/1.6 from <body> */
-	line-height: 1.6; /* same rhythm as other fields */
+	border-radius: 10px; /* keep your pill shape */
 }
 
-/* WebKit sometimes ignores font inheritance for these controls: be explicit */
-@supports (-webkit-touch-callout: none) {
-	input[type="date"],
-	input[type="datetime-local"] {
-		font-size: 15px; /* exactly the same size as text inputs */
-	}
-}
-
-/* Keep the inner editor tidy without stretching it edge-to-edge */
+/* Keep the inner editor tidy (no extra vertical padding) */
 input[type="date"]::-webkit-datetime-edit,
 input[type="datetime-local"]::-webkit-datetime-edit {
+	padding: 0;
+	margin: 0;
 	display: inline-flex;
 	align-items: center;
-	/* just enough width so it doesn't collapse to a dash when empty */
-	min-width: 12ch;
+	min-width: 12ch; /* avoid the “tiny dash” when empty */
 }
 input[type="datetime-local"]::-webkit-datetime-edit {
 	min-width: 22ch;
 }
 
-/* Gentle spacing between the segments (YYYY / MM / DD etc) */
+/* Subtle spacing between segments (yyyy / mm / dd etc.) */
 input[type="date"]::-webkit-datetime-edit-year-field,
 input[type="date"]::-webkit-datetime-edit-month-field,
 input[type="date"]::-webkit-datetime-edit-day-field,
@@ -358,7 +353,14 @@ input[type="datetime-local"]::-webkit-datetime-edit-ampm-field {
 	padding: 0 2px;
 }
 
-/* Hide the tiny baseline glyph when empty, but show a muted tone on focus */
+/* Keep the native picker icon; align and soften it */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+	opacity: 0.7;
+	margin-right: -2px; /* keeps right padding feeling identical */
+}
+
+/* Hide iOS’ baseline glyph when empty, but show a muted tone on focus */
 input[type="date"]:not(:focus):invalid::-webkit-datetime-edit,
 input[type="datetime-local"]:not(:focus):invalid::-webkit-datetime-edit,
 input[type="date"]:not(:focus):invalid::-webkit-datetime-edit-text,
