@@ -312,57 +312,47 @@ footer .btn {
 	outline-offset: 3px;
 }
 
-/* --- iOS Safari: make the inner date editor fill the input width --- */
+/* ---------- iOS-friendly size for date/time inputs ---------- */
+/* One place to control height for all controls */
+:root {
+	--control-h: 44px;
+} /* Apple HIG tap target */
+
 input[type="date"],
 input[type="datetime-local"] {
-	min-height: 42px;
-} /* slightly taller for touch */
+	height: var(--control-h);
+	min-height: var(--control-h); /* ensure it never collapses */
+	font-size: 16px; /* prevents iOS zoom-on-focus */
+	padding: 0 12px; /* outer padding still used */
+}
 
+/* Make the inner editable area fill the whole control */
 input[type="date"]::-webkit-datetime-edit,
 input[type="datetime-local"]::-webkit-datetime-edit {
-	width: 100%;
-	display: inline-block;
-	padding: 0.45em 0.75em; /* comfy insets */
+	display: block;
+	min-width: 100%;
+	height: calc(var(--control-h) - 2px); /* minus borders */
+	line-height: calc(var(--control-h) - 2px);
+	padding: 0; /* we padded the outer input */
 }
 
+/* Ensure the fields wrapper stretches too (prevents the “short dash” look) */
 input[type="date"]::-webkit-datetime-edit-fields-wrapper,
 input[type="datetime-local"]::-webkit-datetime-edit-fields-wrapper {
+	display: flex;
+	align-items: center;
 	width: 100%;
-	display: inline-flex;
 }
 
-input[type="date"]::-webkit-date-and-time-value,
-input[type="datetime-local"]::-webkit-date-and-time-value {
-	display: inline-block;
-	min-width: 100%;
-}
-
-/* Keep the muted “ghost” tone until valid */
+/* Tints while empty (iOS uses a glyph instead of placeholder) */
 input[type="date"]:invalid::-webkit-datetime-edit,
 input[type="datetime-local"]:invalid::-webkit-datetime-edit {
 	color: var(--muted);
 	opacity: 0.9;
 }
 
+/* Slightly dim the separators inside the editor */
 input[type="date"]::-webkit-datetime-edit-text,
 input[type="datetime-local"]::-webkit-datetime-edit-text {
 	opacity: 0.7;
-}
-
-/* Faux placeholder for date/datetime (injected via JS) */
-label {
-	position: relative;
-} /* so hints can be positioned */
-.date-hint {
-	position: absolute;
-	pointer-events: none;
-	color: var(--muted);
-	opacity: 0.85;
-	font-size: 14px;
-	line-height: 1;
-	transition: opacity 0.12s ease, transform 0.12s ease;
-}
-label[data-has-value="1"] .date-hint {
-	opacity: 0;
-	transform: translateY(-2px);
 }
