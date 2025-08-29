@@ -28,9 +28,9 @@ import {
 import { badge, chip, $, renderList } from "./ui.js";
 
 // --- Release identifiers (keep in sync with sw.js) ---
-const SW_REG_VERSION = "2.97"; // used for ./sw.js?v=...
-const EXPECTED_CACHE = "safair-duty-v2.97"; // must equal CACHE in sw.js
-const APP_VERSION = "v2.97"; // fallback label
+const SW_REG_VERSION = "2.98"; // used for ./sw.js?v=...
+const EXPECTED_CACHE = "safair-duty-v2.98"; // must equal CACHE in sw.js
+const APP_VERSION = "v2.98"; // fallback label
 
 let deferredPrompt = null;
 let SETTINGS = null;
@@ -827,70 +827,85 @@ function iosProxyDateInputs() {
 	];
 
 	const L = window.luxon?.DateTime;
-	const fmt = (v, t = "datetime-local") => {
-		if (!v) return "";
+	const formatDisplay = (iso, kind = "datetime-local") => {
+		if (!iso) return "";
 		if (L) {
-			const dt = L.fromISO(v);
-			if (!dt.isValid) return v;
-			return t.startsWith("date")
-				? dt.toFormat("yyyy / MM / dd")
-				: dt.toFormat("yyyy / MM / dd, HH:mm");
+			const dt = L.fromISO(iso);
+			if (!dt.isValid) return iso;
+			return kind.startsWith("date")
+				? dt.toFormat("dd MMM yyyy")
+				: dt.toFormat("dd MMM yyyy, HH:mm");
 		}
-		return v.replace("T", ", "); // fallback
+		// Fallback formatter
+		if (iso.includes("T")) {
+			const [d, t] = iso.split("T");
+			return `${d.replaceAll("-", " / ")} , ${t.slice(0, 5)}`;
+		}
+		return iso.replaceAll("-", " / ");
 	};
 
 	for (const f of FIELDS) {
 		const native = document.getElementById(f.id);
 		if (!native) continue;
 
-		// Ensure correct native type and keep its id/name (form reads this one)
 		native.type = f.type;
+		native.step = "60"; // ensure minutes are part of the value
 
-		// Build a wrapper so we can stack the inputs
+		// Wrap so we can stack the inputs
 		const wrapper = document.createElement("div");
 		wrapper.style.position = "relative";
 		wrapper.style.width = "100%";
 
-		// Visible proxy (styled like the rest via your input styles)
+		// Visible proxy (pretty text field)
 		const proxy = document.createElement("input");
 		proxy.type = "text";
 		proxy.id = f.id + "_display";
 		proxy.placeholder = f.ph;
-		proxy.value = native.value ? fmt(native.value, f.type) : "";
+		proxy.value = native.value ? formatDisplay(native.value, f.type) : "";
 
-		// Insert wrapper, then proxy, then move native into wrapper
+		// Insert: wrapper → proxy + native
 		native.parentElement.insertBefore(wrapper, native);
 		wrapper.appendChild(proxy);
 		wrapper.appendChild(native);
 
-		// Make native cover the proxy but be invisible; taps hit native → opens picker
+		// Native covers the proxy but is invisible; taps open the picker
 		Object.assign(native.style, {
 			position: "absolute",
 			inset: "0",
 			width: "100%",
 			height: "100%",
 			opacity: "0",
-			pointerEvents: "auto", // allow taps
+			pointerEvents: "auto",
 			background: "transparent",
-			// keep borders/padding from affecting layout (they won't show anyway)
 		});
 
-		// Keep proxy text in sync with native value
-		const sync = () => {
-			proxy.value = native.value ? fmt(native.value, f.type) : "";
-		};
-		native.addEventListener("change", sync);
-		native.addEventListener("input", sync);
+		// Keep proxy in sync with native (RAF to wait for WebKit to apply the value)
+		const sync = () =>
+			requestAnimationFrame(() => {
+				const v = native.value || "";
+				if (!v) {
+					proxy.value = "";
+					return;
+				}
+				const hasTime = /\dT\d{2}:\d{2}/.test(v);
+				proxy.value = hasTime
+					? formatDisplay(v, f.type)
+					: formatDisplay(v, "date") + ", --:--";
+			});
 
-		// If user clears proxy, clear native too (rare on iOS, but safe)
+		native.addEventListener("input", sync);
+		native.addEventListener("change", sync);
+		native.addEventListener("blur", sync);
+
+		// If the proxy is cleared manually, clear the native too
 		proxy.addEventListener("input", () => {
 			if (proxy.value === "") {
 				native.value = "";
-				native.dispatchEvent(new Event("input"));
+				native.dispatchEvent(new Event("input", { bubbles: true }));
 			}
 		});
 
-		// After form reset, clear proxy as well
+		// After form reset, clear text value too
 		if (native.form) {
 			native.form.addEventListener("reset", () => requestAnimationFrame(sync));
 		}
