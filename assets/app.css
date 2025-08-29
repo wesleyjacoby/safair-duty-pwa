@@ -193,14 +193,14 @@ select {
 	background-size: 6px 6px, 6px 6px;
 	background-repeat: no-repeat;
 }
-input[type="number"] {
+/* input[type="number"] {
 	-moz-appearance: textfield;
 }
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button {
 	-webkit-appearance: none;
 	margin: 0;
-}
+} */
 
 /* helper grid */
 .grid {
@@ -224,15 +224,17 @@ input[type="number"]::-webkit-inner-spin-button {
 /* The actual native control (no border, transparent) */
 .dt-overlay > input[type="datetime-local"] {
 	width: 100%;
-	height: 40px; /* your control height */
+	height: 40px;
 	min-height: 40px;
-	border: 0; /* << remove input border */
+	padding: 12px 12px; /* <- integers avoid subpixel artifacts */
+	border: 0;
 	outline: none;
 	background: transparent;
-	padding: 14px 12px; /* same as other fields */
-	-webkit-appearance: none; /* iOS: don't shrink */
+	font-size: 16px; /* avoid iOS zoom */
+	-webkit-appearance: none;
 	text-align: left;
-	font-size: 16px; /* avoids iOS zoom-on-focus */
+	position: relative;
+	z-index: 1;
 }
 
 /* The readable label that shows when blurred */
@@ -241,7 +243,7 @@ input[type="number"]::-webkit-inner-spin-button {
 	inset: 0;
 	display: flex;
 	align-items: center;
-	padding: 14px 12px; /* matches input padding */
+	padding: 12px 12px; /* matches input padding */
 	border-radius: 10px;
 	color: var(--text);
 	white-space: nowrap;
@@ -258,6 +260,12 @@ input[type="number"]::-webkit-inner-spin-button {
 .dt-overlay.open {
 	border-color: var(--primary);
 	box-shadow: 0 0 0 3px var(--ring);
+}
+
+.dt-overlay:not(.open) > input[type="datetime-local"] {
+	color: transparent;
+	-webkit-text-fill-color: transparent;
+	caret-color: transparent;
 }
 
 /* Use muted tone when there is no value yet */

@@ -1,5 +1,5 @@
 // sw.js — cache-first PWA SW tailored for GitHub Pages
-const CACHE = "safair-duty-v3.12"; // ← bump each release
+const CACHE = "safair-duty-v3.13"; // ← bump each release
 
 // Assets relative to the repo root (no leading slash)
 const ASSETS = [
