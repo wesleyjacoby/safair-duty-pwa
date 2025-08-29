@@ -1,7 +1,8 @@
 // assets/calc.js
 // Core calculations for legality, fatigue, and cumulative limits.
 
-import { DateTime, Interval } from "../vendor/luxon.min.js";
+// Use the global Luxon (UMD) instead of ESM import
+const { DateTime, Interval } = luxon;
 
 /* ======================== Utilities ======================== */
 
@@ -24,12 +25,6 @@ function localHour(dt) {
 }
 
 /* ======================== Disruptive ======================== */
-/**
- * SA-CATS disruptive schedule flags (acclimatised, South Africa local)
- * - Early start (05:00–05:59)
- * - Late finish (23:00–01:59)
- * - Night duty (encroaches 02:00–04:59)
- */
 export function classifyDisruptive(reportIso, offIso) {
 	const rpt = DateTime.fromISO(reportIso);
 	const off = DateTime.fromISO(offIso);
@@ -53,34 +48,23 @@ export function classifyDisruptive(reportIso, offIso) {
 }
 
 /* ======================== FDP Limit (acclimatised, two-pilot) ======================== */
-/**
- * Simplified acclimatised FDP limit based on SA-CATS tables:
- * - Early starts & late finishes reduce allowed FDP,
- * - More sectors reduce allowed FDP slightly.
- * This mirrors the earlier logic in spirit (and errs conservative).
- */
 export function fdpLimitAccl(reportIso, sectors = 1) {
 	const rpt = DateTime.fromISO(reportIso);
 	if (!rpt.isValid) return 12 * 60;
 
 	const h = rpt.hour;
-	// Base (in minutes). Peak alertness window gives higher FDP.
 	let base;
 	if (h >= 6 && h < 8) base = 12 * 60;
 	else if (h >= 8 && h < 13) base = 13 * 60;
 	else if (h >= 13 && h < 16) base = 12.5 * 60;
 	else if (h >= 16 && h < 20) base = 12 * 60;
-	else base = 11 * 60; // very early/late starts conservative
+	else base = 11 * 60; // conservative early/late
 
-	// Sector adjustment (small reductions for more sectors)
 	const s = Math.max(1, Math.min(8, sectors | 0));
 	const sectorPenalty = Math.max(0, s - 1) * 15; // 15 min per extra sector
 	let limit = base - sectorPenalty;
 
-	// Early start penalty
-	if (h >= 5 && h < 6) limit -= 30;
-
-	// Clip to sane bounds
+	if (h >= 5 && h < 6) limit -= 30; // early-start penalty
 	limit = Math.max(9 * 60, Math.min(13.5 * 60, limit));
 	return Math.round(limit);
 }
@@ -93,16 +77,6 @@ export function splitDutyExtensionMins(consecutiveRestMins) {
 }
 
 /* ======================== Earliest next report (rest rules) ======================== */
-/**
- * SA-CATS 121.02.13 §8(5)(a):
- * - Home base: ≥ 12h rest.
- * - Away & acclimatised: ≥ 10h incl. a local night; if not incl. a local night ⇒ 12h;
- *   if outside a local night ⇒ 14h.
- * Here we approximate:
- *   - Home  : off + 12h.
- *   - Away  : try off + 10h but if that rest does NOT include any 22:00–08:00 block,
- *             use 12h; if it ends entirely outside that band, use 14h.
- */
 export function earliestNextReport(offIso, location = "Home") {
 	const off = DateTime.fromISO(offIso);
 	if (!off.isValid)
@@ -112,12 +86,10 @@ export function earliestNextReport(offIso, location = "Home") {
 		return { earliest: off.plus({ hours: 12 }), basis: "Home: 12h min rest" };
 	}
 
-	// Away logic
+	// Away logic (local night heuristic)
 	const try10 = off.plus({ hours: 10 });
 	const restInt10 = Interval.fromDateTimes(off, try10);
 
-	// Define a "local night band" as two overlapping ranges per day:
-	// 22:00–23:59 and 00:00–08:00 (to cross midnight)
 	const dn = off.startOf("day");
 	const nightBand1 = Interval.fromDateTimes(
 		dn.set({ hour: 22 }),
@@ -133,7 +105,6 @@ export function earliestNextReport(offIso, location = "Home") {
 	if (hasLocalNight)
 		return { earliest: try10, basis: "Away: 10h incl. local night" };
 
-	// No local night overlap in the 10h rest → use 12h (or 14h if entirely outside)
 	const try12 = off.plus({ hours: 12 });
 	const restInt12 = Interval.fromDateTimes(off, try12);
 	const hasNight12 =
@@ -158,7 +129,6 @@ export function sleepMetricsForReport(allSleep, reportIso) {
 		.filter((s) => s.start.isValid && s.end.isValid)
 		.sort((a, b) => a.start - b.start);
 
-	// Prior 24h / 48h sleep
 	const win24 = Interval.fromDateTimes(report.minus({ hours: 24 }), report);
 	const win48 = Interval.fromDateTimes(report.minus({ hours: 48 }), report);
 
@@ -180,7 +150,6 @@ export function sleepMetricsForReport(allSleep, reportIso) {
 			break;
 		}
 	}
-	// Fallback if no prior sleep recorded: assume 07:00 local same day
 	if (!lastWake) {
 		const d = report.startOf("day").set({ hour: 7 });
 		lastWake = d > report ? d.minus({ days: 1 }) : d;
@@ -241,17 +210,16 @@ export function timeAwakeAroundDuty(allSleep, reportIso, offIso, chronotype) {
 		sinceWakeAtReport = Math.max(0, report.diff(lastWake, "hours").hours);
 		sinceWakeAtOff = Math.max(0, off.diff(lastWake, "hours").hours);
 	} else {
-		// Fallback: assume woke 07:00 local
 		const fallback = report.startOf("day").set({ hour: 7 });
 		sinceWakeAtReport = Math.max(0, report.diff(fallback, "hours").hours);
 		sinceWakeAtOff = Math.max(0, off.diff(fallback, "hours").hours);
 		usedEstimate = true;
 	}
 
-	// Until bedtime after duty
 	const nextSleep = estimateBedtime(offIso, chronotype);
 	const until = Math.max(0, nextSleep.diff(off, "hours").hours);
 	untilNextSleep = until;
+
 	return {
 		sinceWakeAtReport: Math.round(sinceWakeAtReport * 10) / 10,
 		sinceWakeAtOff: Math.round(sinceWakeAtOff * 10) / 10,
@@ -264,14 +232,13 @@ export function timeAwakeAroundDuty(allSleep, reportIso, offIso, chronotype) {
 export function fatigueScore({
 	priorSleep24,
 	priorSleep48,
-	timeAwakeHrs, // visibility
-	timeAwakePeakHrs, // peak across duty/until next sleep
+	timeAwakeHrs,
+	timeAwakePeakHrs,
 	woclOverlapMins,
 	sps,
 }) {
 	const awake =
 		typeof timeAwakePeakHrs === "number" ? timeAwakePeakHrs : timeAwakeHrs;
-
 	let score = 100;
 
 	// Sleep debt penalties
@@ -286,7 +253,7 @@ export function fatigueScore({
 	// WOCL exposure
 	score -= Math.min(60, woclOverlapMins || 0) * 0.4;
 
-	// Subjective sleepiness (SPS 1–7, neutral at 3)
+	// SPS (1–7, neutral at 3)
 	if (sps && sps >= 1 && sps <= 7) score -= (sps - 3) * 4;
 
 	return Math.max(0, Math.min(100, Math.round(score)));

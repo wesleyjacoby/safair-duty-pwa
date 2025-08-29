@@ -1,9 +1,10 @@
 // assets/app.js
-// UI wiring + rendering. Assumes Dexie DB and Luxon vendor scripts are present.
+// UI wiring + rendering. Assumes Dexie DB, Luxon, jsPDF vendor scripts are present.
 
 import {
 	addDuty,
 	getAllDuty,
+	removeDuty,
 	clearAll,
 	addSleep,
 	getAllSleep,
@@ -14,7 +15,6 @@ import {
 import {
 	classifyDisruptive,
 	fdpLimitAccl,
-	splitDutyExtensionMins,
 	fatigueScore,
 	minutesBetween,
 	minToHM,
@@ -27,27 +27,83 @@ import {
 
 import { badge, chip, $, renderList } from "./ui.js";
 
+const APP_VERSION = "v1.0.1 (2025-08-29)";
 let deferredPrompt = null;
 let SETTINGS = null;
 let SELECTED_ID = null;
-
 const MAX_LIST = 20;
+
+/* ======================== Theme ======================== */
+function applyTheme(theme) {
+	const t = theme === "dark" ? "dark" : "light";
+	document.documentElement.setAttribute("data-theme", t);
+
+	// Update button pressed state (if present)
+	const btn = document.getElementById("themeBtn");
+	if (btn) btn.setAttribute("aria-pressed", String(t === "dark"));
+
+	// Keep checkbox in sync too (if you ever keep it in the DOM)
+	const toggle = document.getElementById("themeToggle");
+	if (toggle) toggle.checked = t === "dark";
+}
+
+async function initTheme() {
+	const s = await loadSettings();
+	applyTheme(s.theme || "light");
+
+	// Button toggler
+	document.getElementById("themeBtn")?.addEventListener("click", async () => {
+		const isDark =
+			document.documentElement.getAttribute("data-theme") === "dark";
+		const next = isDark ? "light" : "dark";
+		SETTINGS = await saveSettings({ theme: next });
+		applyTheme(next);
+	});
+}
 
 /* ======================== Install prompt ======================== */
 window.addEventListener("beforeinstallprompt", (e) => {
 	e.preventDefault();
 	deferredPrompt = e;
-	$("#btnInstall").disabled = false;
+	const btn = $("#btnInstall");
+	if (btn) btn.disabled = false;
 });
-$("#btnInstall").addEventListener("click", async () => {
+$("#btnInstall")?.addEventListener("click", async () => {
 	if (!deferredPrompt) return;
 	deferredPrompt.prompt();
 	deferredPrompt = null;
 	$("#btnInstall").disabled = true;
 });
 
+/* ======================== Update-available banner ======================== */
+if ("serviceWorker" in navigator) {
+	navigator.serviceWorker.getRegistration().then((reg) => {
+		if (!reg) return;
+		reg.addEventListener("updatefound", () => {
+			const sw = reg.installing;
+			sw?.addEventListener("statechange", () => {
+				if (sw.state === "installed" && navigator.serviceWorker.controller) {
+					// A new SW is waiting
+					const bar = $("#updateBar");
+					if (bar) bar.style.display = "flex";
+				}
+			});
+		});
+	});
+
+	$("#btnUpdateNow")?.addEventListener("click", async () => {
+		const reg = await navigator.serviceWorker.getRegistration();
+		reg?.waiting?.postMessage({ type: "SKIP_WAITING" });
+	});
+
+	// When the controller changes, the new SW took over → reload
+	navigator.serviceWorker.addEventListener("controllerchange", () =>
+		location.reload()
+	);
+}
+
 /* ======================== Settings form ======================== */
-$("#settingsForm").addEventListener("submit", async (e) => {
+$("#settingsForm")?.addEventListener("submit", async (e) => {
 	e.preventDefault();
 	const [g, c, elev] = $("#setBands")
 		.value.split(",")
@@ -66,11 +122,11 @@ $("#settingsForm").addEventListener("submit", async (e) => {
 });
 
 /* ======================== Duty form ======================== */
-$("#dutyForm").addEventListener("submit", async (e) => {
+$("#dutyForm")?.addEventListener("submit", async (e) => {
 	e.preventDefault();
 	const form = e.target;
+
 	const d = {
-		date: form.date.value,
 		duty_type: form.dutyType.value || "FDP",
 		report: form.report.value,
 		off: form.off.value,
@@ -78,6 +134,9 @@ $("#dutyForm").addEventListener("submit", async (e) => {
 		location: form.location.value || "Home",
 		sps: form.sps.value ? parseInt(form.sps.value, 10) : null,
 	};
+	// If a standalone date field exists, include it; otherwise db.js will infer from report
+	if (form.date && form.date.value) d.date = form.date.value;
+
 	await addDuty(d);
 	await refresh();
 
@@ -90,7 +149,7 @@ $("#dutyForm").addEventListener("submit", async (e) => {
 });
 
 /* ======================== Sleep form ======================== */
-$("#sleepForm").addEventListener("submit", async (e) => {
+$("#sleepForm")?.addEventListener("submit", async (e) => {
 	e.preventDefault();
 	const s = {
 		start: $("#sleepStart").value,
@@ -103,8 +162,8 @@ $("#sleepForm").addEventListener("submit", async (e) => {
 	e.target.reset();
 });
 
-/* ======================== Clear / Export / PDF ======================== */
-$("#btnClear").addEventListener("click", async () => {
+/* ======================== Clear / Export / Import / PDF / Delete ======================== */
+$("#btnClear")?.addEventListener("click", async () => {
 	if (!confirm("Delete all locally stored data (duties, sleep, settings)?"))
 		return;
 	await clearAll();
@@ -112,7 +171,7 @@ $("#btnClear").addEventListener("click", async () => {
 	await refresh();
 });
 
-$("#btnExport").addEventListener("click", async () => {
+$("#btnExport")?.addEventListener("click", async () => {
 	const payload = {
 		exportedAt: new Date().toISOString(),
 		settings: await loadSettings(),
@@ -133,48 +192,104 @@ $("#btnExport").addEventListener("click", async () => {
 	a.click();
 	URL.revokeObjectURL(url);
 });
-$("#btnPDF").addEventListener("click", async () => {
+
+$("#btnImport")?.addEventListener("click", () => $("#importFile").click());
+$("#importFile")?.addEventListener("change", async (e) => {
+	const f = e.target.files?.[0];
+	if (!f) return;
+	const data = JSON.parse(await f.text());
+
+	const modeReplace = confirm(
+		"Import will REPLACE current data. OK to continue?"
+	);
+	if (!modeReplace) return;
+
+	await clearAll();
+	if (data.settings) await saveSettings(data.settings);
+	if (Array.isArray(data.duty)) for (const d of data.duty) await addDuty(d);
+	if (Array.isArray(data.sleep)) for (const s of data.sleep) await addSleep(s);
+
+	e.target.value = "";
+	await refresh();
+	alert("Import complete.");
+});
+
+$("#btnDeleteDuty")?.addEventListener("click", async () => {
+	const all = await getAllDuty();
+	const sel = getSelected(all);
+	if (!sel) return alert("No entry selected.");
+	if (!confirm(`Delete duty on ${sel.date}?`)) return;
+	await removeDuty(sel.id);
+	SELECTED_ID = null;
+	await refresh();
+});
+
+$("#btnPDF")?.addEventListener("click", async () => {
 	const all = await getAllDuty();
 	if (!all.length) return alert("No entries to include.");
 	const selected = getSelected(all);
 	await generatePDF(selected, all);
 });
 
-/* ======================== History click (delegated) ======================== */
-// History: event delegation (works after re-renders)
-$("#history").addEventListener("click", (e) => {
+/* ======================== History click (delegation) ======================== */
+$("#history")?.addEventListener("click", (e) => {
 	const li = e.target.closest("li[data-id]");
 	if (!li) return;
-	const id = li.dataset.id; // keep as string
+	const id = li.dataset.id;
 	if (!id) return;
-	SELECTED_ID = id; // store as string
+	SELECTED_ID = String(id);
+	refresh();
+});
+
+/* ======================== Keyboard shortcuts ======================== */
+document.addEventListener("keydown", async (e) => {
+	if (!["ArrowUp", "ArrowDown", "Delete"].includes(e.key)) return;
+	const all = await getAllDuty();
+	if (!all.length) return;
+	let idx = Math.max(
+		0,
+		all.findIndex((d) => String(d.id) === String(SELECTED_ID))
+	);
+	if (e.key === "ArrowUp") idx = Math.min(idx + 1, all.length - 1); // list is newest→oldest
+	if (e.key === "ArrowDown") idx = Math.max(idx - 1, 0);
+	if (e.key === "Delete") {
+		const sel = all[idx];
+		if (sel && confirm(`Delete duty on ${sel.date}?`)) {
+			await removeDuty(sel.id);
+			SELECTED_ID = null;
+			return refresh();
+		}
+		return;
+	}
+	SELECTED_ID = String(all[idx].id);
 	refresh();
 });
 
 /* ======================== Boot / Refresh ======================== */
 async function boot() {
 	SETTINGS = await loadSettings();
-	$("#setChrono").value = SETTINGS.chronotype;
-	$(
-		"#setBands"
-	).value = `${SETTINGS.bands.good},${SETTINGS.bands.caution},${SETTINGS.bands.elevated}`;
-
+	$("#setChrono") && ($("#setChrono").value = SETTINGS.chronotype);
+	$("#setBands") &&
+		($(
+			"#setBands"
+		).value = `${SETTINGS.bands.good},${SETTINGS.bands.caution},${SETTINGS.bands.elevated}`);
 	// defaults for New Duty inputs
-	$("#dutyType").value = "FDP";
-	$("#sectors").value = 2;
-	$("#location").value = "Home";
-	$("#sps").value = 3;
+	$("#dutyType") && ($("#dutyType").value = "FDP");
+	$("#sectors") && ($("#sectors").value = 2);
+	$("#location") && ($("#location").value = "Home");
+	$("#sps") && ($("#sps").value = 3);
 
+	// Version stamp
+	const v = $("#versionStamp");
+	if (v) v.textContent = APP_VERSION;
+
+	await initTheme();
 	await refresh();
 }
 
 function getSelected(allDuty) {
 	if (!allDuty.length) return null;
-
-	// Normalize SELECTED_ID to string
 	if (SELECTED_ID == null) SELECTED_ID = String(allDuty[0].id);
-
-	// Find by string compare to handle number/string mismatches
 	let sel = allDuty.find((d) => String(d.id) === String(SELECTED_ID));
 	if (!sel) {
 		SELECTED_ID = String(allDuty[0].id);
@@ -194,19 +309,17 @@ async function refresh() {
 		renderLegality(selected, allDuty);
 		renderFatigue(selected, allSleep);
 	} else {
-		$("#legalityBadges").innerHTML = "";
-		$("#fatigueGauge").textContent = "—";
-		$("#fatigueChips").innerHTML = "";
-		$("#legalityNotes").innerHTML = "";
+		$("#legalityBadges") && ($("#legalityBadges").innerHTML = "");
+		$("#fatigueGauge") && ($("#fatigueGauge").textContent = "—");
+		$("#fatigueChips") && ($("#fatigueChips").innerHTML = "");
+		$("#legalityNotes") && ($("#legalityNotes").innerHTML = "");
 	}
 }
 
 /* ======================== Legality ======================== */
-/** Legality per OM/SA-CATS (acclimatised). Days-off checks included. */
 function renderLegality(d, all) {
 	const badges = [];
 
-	// FDP limit + actual FDP
 	const limit = fdpLimitAccl(d.report, d.sectors || 1);
 	const actual = minutesBetween(d.report, d.off);
 	const remaining = Math.max(0, limit - actual);
@@ -222,27 +335,22 @@ function renderLegality(d, all) {
 		)
 	);
 
-	// Disruptive
 	const flags = classifyDisruptive(d.report, d.off);
 	if (flags.length) badges.push(badge(flags.join(" · "), "warn"));
 
-	// Cumulative checks (incl. new avg weekly)
 	const cum = computeCumulativeAndDaysOff(all, d.off);
 	const tone7 = cum.hours7 <= 60 ? "ok" : "bad";
 	badges.push(badge(`Duty last 7d: ${cum.hours7} h (≤60)`, tone7));
 
-	// Keep 28d total visible (optional)
 	badges.push(
 		badge(`Duty last 28d: ${cum.hours28} h`, cum.hours28 <= 200 ? "ok" : "warn")
 	);
 
-	// NEW: Avg weekly duty (28d)
 	const toneAvg = cum.avgWeekly28 <= 50 ? "ok" : "bad";
 	badges.push(
 		badge(`Avg weekly duty (28d): ${cum.avgWeekly28} h (≤50)`, toneAvg)
 	);
 
-	// Days-off rules
 	if (cum.consecWork > 7) badges.push(badge(`>7 consecutive work days`, "bad"));
 	else badges.push(badge(`Consec work days: ${cum.consecWork}`, "ok"));
 	badges.push(
@@ -268,9 +376,9 @@ function renderLegality(d, all) {
 
 	const p = document.createElement("div");
 	p.innerHTML = `<div class="small muted">
-		These values are advisory and simplified (acclimatised). For edge cases, unusual pairings, 
-		or split duty specifics, always refer to OM / SA-CATS and company FRMS.
-	</div>`;
+    These values are advisory and simplified (acclimatised). For edge cases, unusual pairings, 
+    or split duty specifics, always refer to OM / SA-CATS and company FRMS.
+  </div>`;
 	$("#legalityNotes").innerHTML = "";
 	$("#legalityNotes").appendChild(p);
 }
@@ -291,12 +399,10 @@ function renderFatigue(d, allSleep) {
 		priorSleep24: sleep.priorSleep24,
 		priorSleep48: sleep.priorSleep48,
 		timeAwakePeakHrs: awake.untilNextSleep, // peak exposure
-		timeAwakeHrs: awake.sinceWakeAtReport, // fallback for visibility
+		timeAwakeHrs: awake.sinceWakeAtReport, // fallback/display
 		woclOverlapMins: woclMins,
 		sps,
 	});
-
-	const { good, caution, elevated } = SETTINGS.bands;
 
 	$("#fatigueGauge").textContent = Math.round(score);
 	const chips = [];
@@ -320,6 +426,7 @@ function renderFatigue(d, allSleep) {
 		);
 	if (sps) chips.push(chip(`SPS ${sps}`));
 
+	const { good, caution, elevated } = SETTINGS.bands;
 	if (score < elevated) chips.push(chip("High"));
 	else if (score < caution) chips.push(chip("Elevated"));
 	else if (score < good) chips.push(chip("Caution"));
@@ -359,6 +466,8 @@ async function generatePDF(latest, all) {
 
 	doc.setFontSize(12);
 	doc.setFont("helvetica", "");
+	doc.text(`Version: ${APP_VERSION}`, pad, y);
+	y += 14;
 	doc.text(`Date: ${latest.date}`, pad, y);
 	y += 14;
 	doc.text(
@@ -375,7 +484,6 @@ async function generatePDF(latest, all) {
 	doc.setFont("helvetica", "bold");
 	doc.text("Legality", pad, y);
 	y += 14;
-
 	const limit = fdpLimitAccl(latest.report, latest.sectors || 1);
 	const actual = minutesBetween(latest.report, latest.off);
 	const remain = Math.max(0, limit - actual);
@@ -493,7 +601,7 @@ async function generatePDF(latest, all) {
 	doc.save(`safair-duty-${latest.date}.pdf`);
 }
 
-/* ======================== History & Sleep list ======================== */
+/* ======================== History & list ======================== */
 function makeToggle(label) {
 	const btn = document.createElement("button");
 	btn.className = "btn ghost small";
@@ -504,6 +612,7 @@ function makeToggle(label) {
 
 function renderHistory(all) {
 	const wrap = $("#history");
+	if (!wrap) return;
 	wrap.innerHTML = "";
 	if (!all.length) {
 		wrap.textContent = "No entries yet.";
@@ -514,13 +623,15 @@ function renderHistory(all) {
 	const list = expanded ? all : all.slice(0, MAX_LIST);
 
 	const ul = document.createElement("ul");
+	ul.setAttribute("role", "listbox");
 	list.forEach((d) => {
 		const li = document.createElement("li");
 		li.dataset.id = d.id;
-		if (d.id === SELECTED_ID) li.classList.add("active");
+		if (String(d.id) === String(SELECTED_ID)) li.classList.add("active");
 		li.textContent = `${d.date} • ${d.duty_type} • ${
 			d.sectors || 0
 		} sectors • ${d.report} → ${d.off}`;
+		li.setAttribute("role", "option");
 		ul.appendChild(li);
 	});
 	wrap.appendChild(ul);

@@ -7,146 +7,187 @@
     <!-- Single, full-featured viewport -->
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 
-    <meta name="theme-color" content="#0b0f14" />
+    <!-- PWA meta -->
+    <meta name="theme-color" content="#f7f8fa" />
     <meta name="apple-mobile-web-app-title" content="Duty & Fatigue" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
     <link rel="apple-touch-icon" href="icons/icon-192.png" />
     <link rel="icon" href="icons/icon-192.png" />
-
     <link rel="manifest" href="manifest.webmanifest" />
+
+    <!-- Styles -->
     <link rel="stylesheet" href="assets/app.css" />
 
+    <!-- Vendor scripts -->
     <script defer src="vendor/luxon.min.js"></script>
     <script defer src="vendor/dexie.min.js"></script>
     <script defer src="vendor/jspdf.umd.min.js"></script>
+
+    <!-- App -->
     <script type="module" src="assets/app.js"></script>
 </head>
 
 <body>
-    <header class="topbar">
-        <h1>Safair Duty & Fatigue</h1>
-        <div class="spacer"></div>
+    <!-- Top bar -->
+    <header class="topbar container">
+        <h1>Safair Duty &amp; Fatigue</h1>
+        <div class="sp"></div>
+
+        <!-- Theme toggle -->
+        <button id="themeBtn" class="btn ghost toggle" aria-pressed="false" type="button">Dark</button>
+
+        <!-- Actions -->
         <button id="btnExport" class="btn ghost" title="Export JSON">Export</button>
+        <button id="btnImport" class="btn ghost" title="Import JSON">Import</button>
+        <input id="importFile" type="file" accept="application/json" hidden />
         <button id="btnPDF" class="btn ghost" title="Generate PDF">PDF</button>
-        <button id="btnInstall" class="btn">Install</button>
+
+        <!-- PWA install -->
+        <button id="btnInstall" class="btn" title="Install app" disabled>Install</button>
     </header>
 
     <main class="container">
         <!-- SETTINGS -->
-        <section class="card">
+        <section class="panel">
             <h2>Settings</h2>
-            <div class="small muted" style="margin-bottom:8px">Saved locally. Chronotype shifts WOCL by ±30 min.</div>
-            <form id="settingsForm" class="grid">
-                <label>Chronotype (diurnal type)
-                    <select id="setChrono">
-                        <option value="neutral">Neutral (default)</option>
-                        <option value="early">Early (lark)</option>
-                        <option value="late">Late (owl)</option>
-                    </select>
-                </label>
-                <label>Fatigue bands (Good / Caution / Elevated)
-                    <input type="text" id="setBands" value="80,60,45" />
-                    <span class="small muted">Comma: e.g. <code>80,60,45</code></span>
-                </label>
-                <button class="btn" type="submit">Save Settings</button>
+            <div class="small muted" style="margin-bottom:8px">
+                Saved locally. Chronotype shifts WOCL by ±30 min. Theme toggle is in the header.
+            </div>
+            <form id="settingsForm">
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+                    <label>Chronotype (diurnal type)
+                        <select id="setChrono">
+                            <option value="neutral">Neutral (default)</option>
+                            <option value="early">Early (lark)</option>
+                            <option value="late">Late (owl)</option>
+                        </select>
+                    </label>
+
+                    <label>Fatigue bands (Good / Caution / Elevated)
+                        <input type="text" id="setBands" value="80,60,45" />
+                        <span class="small muted">Comma: e.g. <code>80,60,45</code></span>
+                    </label>
+                </div>
+                <div style="margin-top:10px">
+                    <button class="btn" type="submit">Save Settings</button>
+                </div>
             </form>
         </section>
 
         <!-- NEW DUTY -->
-        <section class="card">
+        <section class="panel">
             <h2>New Duty</h2>
-            <form id="dutyForm" class="grid">
-                <label>Date
-                    <input type="date" id="dutyDate" required autofocus />
-                </label>
-                <label>Sign On (local)
-                    <input type="datetime-local" id="reportIso" required />
-                </label>
-                <label>Sign Off (local)
-                    <input type="datetime-local" id="offIso" required />
-                </label>
-                <label>Duty Type
-                    <select id="dutyType">
-                        <option>FDP</option>
-                        <option>Standby</option>
-                        <option>Flight Watch</option>
-                        <option>Home Reserve</option>
-                        <option>Positioning</option>
-                        <option>Ground</option>
-                        <option>Rest</option>
-                    </select>
-                </label>
-                <label>Sectors (count)
-                    <input type="number" id="sectors" min="0" max="8" value="2" />
-                </label>
-                <label>Location
-                    <select id="location">
-                        <option>Home</option>
-                        <option>Away</option>
-                    </select>
-                </label>
-                <label>SPS (1–7)
-                    <input type="number" id="sps" min="1" max="7" value="3" />
-                </label>
-                <button class="btn primary" type="submit">Save Duty</button>
+            <form id="dutyForm">
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+                    <label>Sign On (local)
+                        <input type="datetime-local" id="report" name="report" required />
+                    </label>
+                    <label>Sign Off (local)
+                        <input type="datetime-local" id="off" name="off" required />
+                    </label>
+                    <label>Duty Type
+                        <select id="dutyType" name="dutyType">
+                            <option>FDP</option>
+                            <option>Standby</option>
+                            <option>Flight Watch</option>
+                            <option>Home Reserve</option>
+                            <option>Positioning</option>
+                            <option>Ground</option>
+                            <option>Rest</option>
+                        </select>
+                    </label>
+                    <label>Sectors (count)
+                        <input type="number" id="sectors" name="sectors" min="0" max="8" value="2" />
+                    </label>
+                    <label>Location
+                        <select id="location" name="location">
+                            <option>Home</option>
+                            <option>Away</option>
+                        </select>
+                    </label>
+                    <label>SPS (1–7)
+                        <input type="number" id="sps" name="sps" min="1" max="7" value="3" />
+                    </label>
+                </div>
+                <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn primary" type="submit">Save Duty</button>
+                    <button id="btnDeleteDuty" class="btn danger" type="button" title="Delete selected duty">Delete
+                        selected duty</button>
+                </div>
             </form>
         </section>
 
         <!-- LEGALITY -->
-        <section class="card">
+        <section class="panel">
             <h2>Selected Duty Legality</h2>
             <div id="legalityBadges" class="badges"></div>
-            <div id="legalityNotes" class="notes"></div>
+            <div id="legalityNotes" class="small muted" style="margin-top:8px"></div>
         </section>
 
         <!-- FATIGUE -->
-        <section class="card">
+        <section class="panel">
             <h2>Fatigue (Advisory)</h2>
-            <div id="fatigueGauge" class="gauge">—</div>
-            <div id="fatigueChips" class="chips"></div>
-            <div class="muted small">Advisory only; aligns with FRMP + SPS.</div>
+            <div id="fatigueGauge">—</div>
+            <div id="fatigueChips" class="chips" style="margin-top:8px"></div>
+            <div class="muted small" style="margin-top:6px">Advisory only; aligns with FRMP + SPS.</div>
         </section>
 
         <!-- SLEEP -->
-        <section class="card">
+        <section class="panel">
             <h2>Sleep Diary</h2>
-            <form id="sleepForm" class="grid">
-                <label>Start (local)
-                    <input type="datetime-local" id="sleepStart" required />
-                </label>
-                <label>End (local)
-                    <input type="datetime-local" id="sleepEnd" required />
-                </label>
-                <label>Type
-                    <select id="sleepType">
-                        <option value="main">Main</option>
-                        <option value="nap">Nap</option>
-                    </select>
-                </label>
-                <label>Quality (1–5)
-                    <input type="number" id="sleepQuality" min="1" max="5" value="3" step="0.5" />
-                </label>
-                <button class="btn" type="submit">Add Sleep</button>
+            <form id="sleepForm">
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+                    <label>Start (local)
+                        <input type="datetime-local" id="sleepStart" required />
+                    </label>
+                    <label>End (local)
+                        <input type="datetime-local" id="sleepEnd" required />
+                    </label>
+                    <label>Type
+                        <select id="sleepType">
+                            <option value="main">Main</option>
+                            <option value="nap">Nap</option>
+                        </select>
+                    </label>
+                    <label>Quality (1–5)
+                        <input type="number" id="sleepQuality" min="1" max="5" value="3" step="0.5" />
+                    </label>
+                </div>
+                <div style="margin-top:10px">
+                    <button class="btn" type="submit">Add Sleep</button>
+                </div>
             </form>
-            <div id="sleepList" class="notes"></div>
+            <div id="sleepList" class="small muted" style="margin-top:8px"></div>
         </section>
 
         <!-- HISTORY -->
-        <section class="card">
+        <section class="panel">
             <h2>History</h2>
             <div id="history"></div>
+            <div class="small muted" style="margin-top:8px">Tip: ↑/↓ to change selection; Del to delete selected.</div>
         </section>
     </main>
 
-    <footer class="footer">
-        <button id="btnClear" class="btn danger">Clear All (local)</button>
+    <footer class="container"
+        style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:24px">
+        <div class="small muted">Safair Duty Tracker — <span id="versionStamp"></span></div>
+        <div style="display:flex;gap:8px">
+            <button id="btnClear" class="btn danger">Clear All (local)</button>
+        </div>
     </footer>
 
+    <!-- Update-available banner -->
+    <div id="updateBar" class="panel container" role="status" aria-live="polite">
+        A new version is available.
+        <button id="btnUpdateNow" class="btn primary small">Reload</button>
+    </div>
+
+    <!-- SW registration -->
     <script>
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('./sw.js');
+            window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
         }
     </script>
 </body>

@@ -18,7 +18,6 @@ db.version(2).stores({
 
 /* ---------------- Duties ---------------- */
 export async function addDuty(entry) {
-	// Normalize a few fields
 	const e = { ...entry };
 	if (!e.date && e.report) {
 		try {
@@ -29,10 +28,12 @@ export async function addDuty(entry) {
 	return db.duty.add(e);
 }
 
+export async function removeDuty(id) {
+	return db.duty.delete(Number(id));
+}
+
 export async function getAllDuty() {
-	// Latest first by id (monotonic)
 	const rows = await db.duty.orderBy("id").reverse().toArray();
-	// Ensure consistent shape
 	return rows.map((r) => ({
 		id: r.id,
 		date: r.date,
@@ -73,7 +74,8 @@ export async function loadSettings() {
 		s || {
 			id: "defaults",
 			chronotype: "neutral", // "early" | "neutral" | "late"
-			bands: { good: 80, caution: 60, elevated: 45 }, // fatigue gauge thresholds
+			bands: { good: 80, caution: 60, elevated: 45 }, // fatigue thresholds
+			theme: "light", // "light" | "dark"
 		}
 	);
 }
