@@ -28,9 +28,9 @@ import {
 import { badge, chip, $, renderList } from "./ui.js";
 
 // --- Release identifiers (keep in sync with sw.js) ---
-const SW_REG_VERSION = "2.96"; // used for ./sw.js?v=...
-const EXPECTED_CACHE = "safair-duty-v2.96"; // must equal CACHE in sw.js
-const APP_VERSION = "v2.96"; // fallback label
+const SW_REG_VERSION = "2.97"; // used for ./sw.js?v=...
+const EXPECTED_CACHE = "safair-duty-v2.97"; // must equal CACHE in sw.js
+const APP_VERSION = "v2.97"; // fallback label
 
 let deferredPrompt = null;
 let SETTINGS = null;
@@ -843,55 +843,56 @@ function iosProxyDateInputs() {
 		const native = document.getElementById(f.id);
 		if (!native) continue;
 
-		// Ensure native has the right type
+		// Ensure correct native type and keep its id/name (form reads this one)
 		native.type = f.type;
 
-		// Build a visible proxy text input that looks like the rest of your fields
-		const proxy = native.cloneNode(false);
+		// Build a wrapper so we can stack the inputs
+		const wrapper = document.createElement("div");
+		wrapper.style.position = "relative";
+		wrapper.style.width = "100%";
+
+		// Visible proxy (styled like the rest via your input styles)
+		const proxy = document.createElement("input");
 		proxy.type = "text";
 		proxy.id = f.id + "_display";
-		proxy.name = ""; // keep the native one in the form for reading/validation
 		proxy.placeholder = f.ph;
 		proxy.value = native.value ? fmt(native.value, f.type) : "";
 
-		// Insert proxy after native
-		native.parentElement.insertBefore(proxy, native.nextSibling);
+		// Insert wrapper, then proxy, then move native into wrapper
+		native.parentElement.insertBefore(wrapper, native);
+		wrapper.appendChild(proxy);
+		wrapper.appendChild(native);
 
-		// Hide native but keep it in the DOM so showPicker() works
+		// Make native cover the proxy but be invisible; taps hit native → opens picker
 		Object.assign(native.style, {
 			position: "absolute",
+			inset: "0",
+			width: "100%",
+			height: "100%",
 			opacity: "0",
-			pointerEvents: "none",
-			width: "1px",
-			height: "1px",
-			padding: "0",
-			margin: "0",
+			pointerEvents: "auto", // allow taps
+			background: "transparent",
+			// keep borders/padding from affecting layout (they won't show anyway)
 		});
 
-		// Open native picker whenever user focuses/clicks the proxy
-		const openPicker = () => native.showPicker?.();
-		proxy.addEventListener("focus", openPicker);
-		proxy.addEventListener("click", openPicker);
-
-		// Sync selection back to the proxy for display
+		// Keep proxy text in sync with native value
 		const sync = () => {
 			proxy.value = native.value ? fmt(native.value, f.type) : "";
 		};
 		native.addEventListener("change", sync);
 		native.addEventListener("input", sync);
 
-		// If user clears the proxy, clear native too
+		// If user clears proxy, clear native too (rare on iOS, but safe)
 		proxy.addEventListener("input", () => {
-			if (proxy.value === "") native.value = "";
+			if (proxy.value === "") {
+				native.value = "";
+				native.dispatchEvent(new Event("input"));
+			}
 		});
 
-		// After form reset, clear the proxy as well
+		// After form reset, clear proxy as well
 		if (native.form) {
-			native.form.addEventListener("reset", () => {
-				requestAnimationFrame(() => {
-					proxy.value = "";
-				});
-			});
+			native.form.addEventListener("reset", () => requestAnimationFrame(sync));
 		}
 	}
 }
