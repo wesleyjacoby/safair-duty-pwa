@@ -29,9 +29,9 @@ import {
 import { badge, chip, $, renderList } from "./ui.js";
 
 /* ---------------- Release identifiers ---------------- */
-const SW_REG_VERSION = "3.04"; // used for ./sw.js?v=...  (bump on deploy)
-const EXPECTED_CACHE = "safair-duty-v3.04"; // must equal CACHE in sw.js
-const APP_VERSION = "v3.04"; // footer fallback if SW not ready
+const SW_REG_VERSION = "3.1"; // used for ./sw.js?v=...  (bump on deploy)
+const EXPECTED_CACHE = "safair-duty-v3.1"; // must equal CACHE in sw.js
+const APP_VERSION = "v3.1"; // footer fallback if SW not ready
 
 /* ---------------- Globals ---------------- */
 const { DateTime } = window.luxon || {};
