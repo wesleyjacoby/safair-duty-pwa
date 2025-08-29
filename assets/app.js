@@ -28,9 +28,9 @@ import {
 import { badge, chip, $, renderList } from "./ui.js";
 
 // --- Release identifiers (keep in sync with sw.js) ---
-const SW_REG_VERSION = "2.93"; // used for ./sw.js?v=...
-const EXPECTED_CACHE = "safair-duty-v2.93"; // must equal CACHE in sw.js
-const APP_VERSION = "v2.93"; // fallback label
+const SW_REG_VERSION = "2.95"; // used for ./sw.js?v=...
+const EXPECTED_CACHE = "safair-duty-v2.95"; // must equal CACHE in sw.js
+const APP_VERSION = "v2.95"; // fallback label
 
 let deferredPrompt = null;
 let SETTINGS = null;
@@ -121,29 +121,47 @@ async function setupSwUpdates() {
 		});
 	});
 
-	// iOS robustness: if active SW version ≠ EXPECTED_CACHE, surface banner
+	// Surface banner if active SW cache label doesn't match what we expect
 	const meta = await askSwVersion(); // { cache, scope }
 	if (meta?.cache && EXPECTED_CACHE && meta.cache !== EXPECTED_CACHE) {
 		showUpdateBar(true);
 		reg.update?.();
 	}
 
-	// Re-check when app becomes visible (helps iOS)
-	document.addEventListener("visibilitychange", () => {
-		if (document.visibilityState === "visible") reg.update?.();
-	});
-
-	// “Reload” button → activate the new SW
+	// Make the Reload button robust across Safari states
 	document
 		.getElementById("btnUpdateNow")
 		?.addEventListener("click", async () => {
-			const r = await navigator.serviceWorker.getRegistration();
-			r?.waiting?.postMessage({ type: "SKIP_WAITING" });
-			// Fallback: if Safari didn’t create .waiting, force a hard reload
-			setTimeout(() => {
+			try {
+				const r = await navigator.serviceWorker.getRegistration();
+
+				if (r?.waiting) {
+					r.waiting.postMessage({ type: "SKIP_WAITING" });
+					return; // controllerchange will reload
+				}
+				if (r?.installing) {
+					r.installing.addEventListener("statechange", () => {
+						if (r.installing?.state === "installed") {
+							r.waiting?.postMessage({ type: "SKIP_WAITING" });
+						}
+					});
+					return;
+				}
+				await r?.update?.();
+				setTimeout(() => window.location.reload(), 400);
+			} catch {
 				window.location.reload();
-			}, 800);
+			}
 		});
+
+	// Re-check when the tab becomes visible again (helps iOS)
+	document.addEventListener("visibilitychange", async () => {
+		if (document.visibilityState !== "visible") return;
+		const r = await navigator.serviceWorker.getRegistration();
+		await r?.update?.();
+		const info = await askSwVersion();
+		if (info?.cache && info.cache !== EXPECTED_CACHE) showUpdateBar(true);
+	});
 
 	// When the new SW takes control, reload to pick up fresh assets
 	navigator.serviceWorker.addEventListener("controllerchange", () => {
@@ -199,6 +217,7 @@ $("#dutyForm")?.addEventListener("submit", async (e) => {
 	await addDuty(d);
 	await refresh();
 	form.reset();
+	// Restore defaults
 	$("#dutyType").value = "FDP";
 	$("#sectors").value = 2;
 	$("#location").value = "Home";
@@ -240,13 +259,14 @@ $("#btnExport")?.addEventListener("click", async () => {
 	});
 	const url = URL.createObjectURL(blob);
 	const a = document.createElement("a");
-	document.body.appendChild(a);
 	a.style.display = "none";
 	a.href = url;
 	a.download = `safair-duty-export-${new Date()
 		.toISOString()
 		.slice(0, 10)}.json`;
+	document.body.appendChild(a);
 	a.click();
+	a.remove();
 	URL.revokeObjectURL(url);
 });
 
@@ -331,7 +351,7 @@ async function boot() {
 	await setupSwUpdates(); // register + update checks + banner logic
 	await setVersionStamp(); // footer label from active SW (or fallback)
 	await initTheme();
-
+	iosFriendlyDateInputs(); // iPad-friendly date/time
 	await refresh();
 }
 
@@ -495,6 +515,7 @@ function renderFatigue(d, allSleep) {
 	});
 
 	const gauge = $("#fatigueGauge");
+	if (!gauge) return;
 	const band = toneFromScore(score, SETTINGS.bands);
 	gauge.textContent = Math.round(score);
 	gauge.classList.remove("t-ok", "t-warn", "t-bad");
@@ -785,6 +806,58 @@ function renderHistory(all) {
 			renderHistory(all);
 		});
 		wrap.appendChild(btn);
+	}
+}
+
+/* ======================== iOS-friendly date inputs ======================== */
+// Render as text until interaction, then open the native picker.
+// Also re-apply after form reset so the fields don't revert to the “dash”.
+function iosFriendlyDateInputs() {
+	const isiOS =
+		/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+		(navigator.userAgent.includes("Mac") && "ontouchend" in document);
+	if (!isiOS) return;
+
+	const fields = [
+		{ id: "report", type: "datetime-local", ph: "yyyy / mm / dd, --:--" },
+		{ id: "off", type: "datetime-local", ph: "yyyy / mm / dd, --:--" },
+		{ id: "sleepStart", type: "datetime-local", ph: "yyyy / mm / dd, --:--" },
+		{ id: "sleepEnd", type: "datetime-local", ph: "yyyy / mm / dd, --:--" },
+	];
+
+	for (const f of fields) {
+		const el = document.getElementById(f.id);
+		if (!el) continue;
+		el.dataset.nativeType = f.type;
+
+		const setIdle = () => {
+			if (!el.value) {
+				el.type = "text";
+				el.placeholder = f.ph;
+			}
+		};
+		const openPicker = () => {
+			el.type = el.dataset.nativeType || f.type;
+			el.showPicker?.();
+		};
+
+		setIdle();
+		el.addEventListener("focus", openPicker);
+		el.addEventListener("blur", setIdle);
+		el.addEventListener("input", () => {
+			if (!el.value) setIdle();
+		});
+		el.addEventListener("change", () => {
+			if (!el.value) setIdle();
+		});
+
+		// Re-apply after the parent form resets (important on iPad)
+		if (el.form) {
+			el.form.addEventListener("reset", () => {
+				// Wait for the reset to clear the value, then re-apply text mode
+				requestAnimationFrame(setIdle);
+			});
+		}
 	}
 }
 

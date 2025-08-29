@@ -312,69 +312,11 @@ footer .btn {
 	outline-offset: 3px;
 }
 
-/* === Final normalisation for iPad/iOS date & datetime-local === */
-/* Render them like normal text inputs (same height, padding, font) */
-input[type="date"],
-input[type="datetime-local"] {
-	-webkit-appearance: none; /* turn off iOS' oversized control */
-	appearance: none;
-	font: inherit; /* 15px/1.6, same as other inputs */
-	line-height: 1.6;
-	padding: 11.5px 12px; /* identical to your base inputs */
-	height: auto;
-	min-height: 0;
-	border-radius: 10px; /* keep your pill shape */
+/* Keep "text-mode" date fields visually identical */
+input[type="text"][placeholder^="yyyy"] {
+	color: var(--text);
 }
-
-/* Keep the inner editor tidy (no extra vertical padding) */
-input[type="date"]::-webkit-datetime-edit,
-input[type="datetime-local"]::-webkit-datetime-edit {
-	padding: 0;
-	margin: 0;
-	display: inline-flex;
-	align-items: center;
-	min-width: 12ch; /* avoid the “tiny dash” when empty */
-}
-input[type="datetime-local"]::-webkit-datetime-edit {
-	min-width: 22ch;
-}
-
-/* Subtle spacing between segments (yyyy / mm / dd etc.) */
-input[type="date"]::-webkit-datetime-edit-year-field,
-input[type="date"]::-webkit-datetime-edit-month-field,
-input[type="date"]::-webkit-datetime-edit-day-field,
-input[type="datetime-local"]::-webkit-datetime-edit-year-field,
-input[type="datetime-local"]::-webkit-datetime-edit-month-field,
-input[type="datetime-local"]::-webkit-datetime-edit-day-field,
-input[type="datetime-local"]::-webkit-datetime-edit-hour-field,
-input[type="datetime-local"]::-webkit-datetime-edit-minute-field,
-input[type="datetime-local"]::-webkit-datetime-edit-second-field,
-input[type="datetime-local"]::-webkit-datetime-edit-ampm-field {
-	padding: 0 2px;
-}
-
-/* Keep the native picker icon; align and soften it */
-input[type="date"]::-webkit-calendar-picker-indicator,
-input[type="datetime-local"]::-webkit-calendar-picker-indicator {
-	opacity: 0.7;
-	margin-right: -2px; /* keeps right padding feeling identical */
-}
-
-/* Hide iOS’ baseline glyph when empty, but show a muted tone on focus */
-input[type="date"]:not(:focus):invalid::-webkit-datetime-edit,
-input[type="datetime-local"]:not(:focus):invalid::-webkit-datetime-edit,
-input[type="date"]:not(:focus):invalid::-webkit-datetime-edit-text,
-input[type="datetime-local"]:not(:focus):invalid::-webkit-datetime-edit-text {
-	color: transparent;
-}
-input[type="date"]:focus:invalid::-webkit-datetime-edit,
-input[type="datetime-local"]:focus:invalid::-webkit-datetime-edit {
+input[type="text"][placeholder^="yyyy"]::placeholder {
 	color: var(--muted);
 	opacity: 0.9;
-}
-
-/* Slightly soften the separators */
-input[type="date"]::-webkit-datetime-edit-text,
-input[type="datetime-local"]::-webkit-datetime-edit-text {
-	opacity: 0.75;
 }
