@@ -28,9 +28,9 @@ import {
 import { badge, chip, $, renderList } from "./ui.js";
 
 // --- Release identifiers (keep in sync with sw.js) ---
-const SW_REG_VERSION = "2.98"; // used for ./sw.js?v=...
-const EXPECTED_CACHE = "safair-duty-v2.98"; // must equal CACHE in sw.js
-const APP_VERSION = "v2.98"; // fallback label
+const SW_REG_VERSION = "2.99"; // used for ./sw.js?v=...
+const EXPECTED_CACHE = "safair-duty-v2.99"; // must equal CACHE in sw.js
+const APP_VERSION = "v2.99"; // fallback label
 
 let deferredPrompt = null;
 let SETTINGS = null;
@@ -107,10 +107,11 @@ async function setupSwUpdates() {
 		"./sw.js?v=" + SW_REG_VERSION
 	);
 
-	// If an update is already waiting, show the banner
+	// If an update is already waiting, show the banner (only show if we have a controller,
+	// so we don't flash it on first install).
 	if (reg.waiting && navigator.serviceWorker.controller) showUpdateBar(true);
 
-	// Show banner when a new worker is installed (not first install)
+	// If a new SW arrives, show the banner once it's installed.
 	reg.addEventListener("updatefound", () => {
 		const sw = reg.installing;
 		if (!sw) return;
@@ -121,53 +122,69 @@ async function setupSwUpdates() {
 		});
 	});
 
-	// Surface banner if active SW cache label doesn't match what we expect
-	const meta = await askSwVersion(); // { cache, scope }
-	if (meta?.cache && EXPECTED_CACHE && meta.cache !== EXPECTED_CACHE) {
-		showUpdateBar(true);
-		reg.update?.();
-	}
+	// Belt-and-braces: if the active SW version doesn't match what the page expects, surface the banner.
+	try {
+		const meta = await askSwVersion(); // {cache, scope}
+		if (meta?.cache && EXPECTED_CACHE && meta.cache !== EXPECTED_CACHE) {
+			showUpdateBar(true);
+			reg.update?.();
+		}
+	} catch {}
 
-	// Make the Reload button robust across Safari states
+	// Reload when the new worker actually takes control (works on most browsers)
+	navigator.serviceWorker.addEventListener("controllerchange", () => {
+		window.location.reload();
+	});
+
+	// Make the "Reload" button extremely robust on iOS/Safari
 	document
 		.getElementById("btnUpdateNow")
 		?.addEventListener("click", async () => {
 			try {
 				const r = await navigator.serviceWorker.getRegistration();
+				if (!r) return window.location.reload();
 
-				if (r?.waiting) {
-					r.waiting.postMessage({ type: "SKIP_WAITING" });
-					return; // controllerchange will reload
-				}
-				if (r?.installing) {
-					r.installing.addEventListener("statechange", () => {
-						if (r.installing?.state === "installed") {
-							r.waiting?.postMessage({ type: "SKIP_WAITING" });
-						}
+				// Wait until a given worker is 'activated', with a timeout fallback.
+				const waitActivated = (sw) =>
+					new Promise((resolve) => {
+						if (!sw) return resolve();
+						const done = () => resolve();
+						const onState = () => {
+							if (sw.state === "activated") done();
+						};
+						sw.addEventListener("statechange", onState, { once: true });
+						// Also resolve on controllerchange (if it does fire)
+						navigator.serviceWorker.addEventListener("controllerchange", done, {
+							once: true,
+						});
+						// And hard timeout so we don't get stuck on iOS
+						setTimeout(done, 2000);
 					});
-					return;
+
+				if (r.waiting) {
+					// Tell the waiting SW to take over now
+					r.waiting.postMessage({ type: "SKIP_WAITING" });
+					await waitActivated(r.waiting);
+					return window.location.reload();
 				}
-				await r?.update?.();
-				setTimeout(() => window.location.reload(), 400);
+
+				if (r.installing) {
+					await waitActivated(r.installing);
+					r.waiting?.postMessage({ type: "SKIP_WAITING" });
+					await waitActivated(r.waiting || r.active);
+					return window.location.reload();
+				}
+
+				// No installing/waiting SW? Force a check and then reload anyway.
+				await r.update?.();
+				setTimeout(() => window.location.reload(), 500);
 			} catch {
+				// Absolute fallback
 				window.location.reload();
 			}
 		});
 
-	// Re-check when the tab becomes visible again (helps iOS)
-	document.addEventListener("visibilitychange", async () => {
-		if (document.visibilityState !== "visible") return;
-		const r = await navigator.serviceWorker.getRegistration();
-		await r?.update?.();
-		const info = await askSwVersion();
-		if (info?.cache && info.cache !== EXPECTED_CACHE) showUpdateBar(true);
-	});
-
-	// When the new SW takes control, reload to pick up fresh assets
-	navigator.serviceWorker.addEventListener("controllerchange", () => {
-		window.location.reload();
-	});
-
+	// Ask the browser to check now
 	reg.update?.();
 }
 
