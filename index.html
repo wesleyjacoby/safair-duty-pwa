@@ -13,7 +13,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
-    <link rel="apple-touch-icon" href="icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="icons/icon-512.png" />
     <link rel="icon" href="icons/icon-192.png" />
     <link rel="manifest" href="manifest.webmanifest" />
 
@@ -187,8 +187,13 @@
     <!-- SW registration -->
     <script>
         if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
+            window.addEventListener('load', async () => {
+                const v = '1.5'; // bump when you release
+                const reg = await navigator.serviceWorker.register('./sw.js?v=' + v);
+                reg.update?.(); // ask the browser to check now
+            });
         }
     </script>
+
 </body>
 </html>
