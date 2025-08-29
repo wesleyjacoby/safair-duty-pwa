@@ -27,8 +27,10 @@ import {
 
 import { badge, chip, $, renderList } from "./ui.js";
 
-// Fallback app version label (footer/PDF will try to read from SW first)
-const APP_VERSION = "v2.1";
+// --- Release identifiers (keep in sync with sw.js) ---
+const SW_REG_VERSION = "2.1"; // used for ./sw.js?v=...
+const EXPECTED_CACHE = "safair-duty-v2.1"; // must equal CACHE in sw.js
+const APP_VERSION = "v2.1"; // fallback label
 
 let deferredPrompt = null;
 let SETTINGS = null;
@@ -39,20 +41,14 @@ const MAX_LIST = 20;
 function applyTheme(theme) {
 	const t = theme === "dark" ? "dark" : "light";
 	document.documentElement.setAttribute("data-theme", t);
-
-	// Update button pressed state (if present)
 	const btn = document.getElementById("themeBtn");
 	if (btn) btn.setAttribute("aria-pressed", String(t === "dark"));
-
-	// Keep checkbox in sync too (if you ever keep it in the DOM)
 	const toggle = document.getElementById("themeToggle");
 	if (toggle) toggle.checked = t === "dark";
 }
 async function initTheme() {
 	const s = await loadSettings();
 	applyTheme(s.theme || "light");
-
-	// Button toggler
 	document.getElementById("themeBtn")?.addEventListener("click", async () => {
 		const isDark =
 			document.documentElement.getAttribute("data-theme") === "dark";
@@ -60,8 +56,6 @@ async function initTheme() {
 		SETTINGS = await saveSettings({ theme: next });
 		applyTheme(next);
 	});
-
-	// Legacy checkbox support
 	document
 		.getElementById("themeToggle")
 		?.addEventListener("change", async (e) => {
@@ -85,54 +79,13 @@ $("#btnInstall")?.addEventListener("click", async () => {
 	$("#btnInstall").disabled = true;
 });
 
-/* ======================== Service Worker: updates ======================== */
+/* ======================== SW updates ======================== */
 function showUpdateBar(show = true) {
 	const bar = document.getElementById("updateBar");
 	if (!bar) return;
 	bar.style.display = show ? "flex" : "none";
 }
 
-async function setupSwUpdates() {
-	if (!("serviceWorker" in navigator)) return;
-
-	// Register with a versioned URL so GH Pages doesn’t cache sw.js
-	const SW_REG_VERSION = "2.1"; // bump when you bump CACHE in sw.js
-	const reg = await navigator.serviceWorker.register(
-		"./sw.js?v=" + SW_REG_VERSION
-	);
-
-	// If an update is already waiting, show the banner
-	if (reg.waiting && navigator.serviceWorker.controller) showUpdateBar(true);
-
-	// Listen for freshly found updates
-	reg.addEventListener("updatefound", () => {
-		const sw = reg.installing;
-		if (!sw) return;
-		sw.addEventListener("statechange", () => {
-			if (sw.state === "installed" && navigator.serviceWorker.controller) {
-				showUpdateBar(true);
-			}
-		});
-	});
-
-	// “Reload” button → activate the new SW
-	document
-		.getElementById("btnUpdateNow")
-		?.addEventListener("click", async () => {
-			const r = await navigator.serviceWorker.getRegistration();
-			r?.waiting?.postMessage({ type: "SKIP_WAITING" });
-		});
-
-	// When the new SW takes control, reload to pick up fresh assets
-	navigator.serviceWorker.addEventListener("controllerchange", () => {
-		window.location.reload();
-	});
-
-	// Ask the browser to check for updates on load
-	reg.update?.();
-}
-
-/* ======================== Version stamp ======================== */
 function askSwVersion() {
 	return new Promise(async (resolve) => {
 		try {
@@ -147,14 +100,66 @@ function askSwVersion() {
 	});
 }
 
+async function setupSwUpdates() {
+	if (!("serviceWorker" in navigator)) return;
+
+	const reg = await navigator.serviceWorker.register(
+		"./sw.js?v=" + SW_REG_VERSION
+	);
+
+	// If an update is already waiting, show the banner
+	if (reg.waiting && navigator.serviceWorker.controller) showUpdateBar(true);
+
+	// Show banner when a new worker is installed (not first install)
+	reg.addEventListener("updatefound", () => {
+		const sw = reg.installing;
+		if (!sw) return;
+		sw.addEventListener("statechange", () => {
+			if (sw.state === "installed" && navigator.serviceWorker.controller) {
+				showUpdateBar(true);
+			}
+		});
+	});
+
+	// iOS robustness: if active SW version ≠ EXPECTED_CACHE, surface banner
+	const meta = await askSwVersion(); // { cache, scope }
+	if (meta?.cache && EXPECTED_CACHE && meta.cache !== EXPECTED_CACHE) {
+		showUpdateBar(true);
+		reg.update?.();
+	}
+
+	// Re-check when app becomes visible (helps iOS)
+	document.addEventListener("visibilitychange", () => {
+		if (document.visibilityState === "visible") reg.update?.();
+	});
+
+	// “Reload” button → activate the new SW
+	document
+		.getElementById("btnUpdateNow")
+		?.addEventListener("click", async () => {
+			const r = await navigator.serviceWorker.getRegistration();
+			r?.waiting?.postMessage({ type: "SKIP_WAITING" });
+			// Fallback: if Safari didn’t create .waiting, force a hard reload
+			setTimeout(() => {
+				window.location.reload();
+			}, 800);
+		});
+
+	// When the new SW takes control, reload to pick up fresh assets
+	navigator.serviceWorker.addEventListener("controllerchange", () => {
+		window.location.reload();
+	});
+
+	reg.update?.();
+}
+
+/* ======================== Version stamp ======================== */
 async function setVersionStamp() {
 	const el = document.getElementById("versionStamp");
 	if (!el) return;
-
 	let label = APP_VERSION;
-	const meta = await askSwVersion(); // { cache: "...", scope: "..." }
+	const meta = await askSwVersion();
 	if (meta?.cache) label = meta.cache;
-
 	const today = new Date().toISOString().slice(0, 10);
 	el.textContent = `${label} (${today})`;
 }
@@ -190,7 +195,7 @@ $("#dutyForm")?.addEventListener("submit", async (e) => {
 		location: form.location.value || "Home",
 		sps: form.sps.value ? parseInt(form.sps.value, 10) : null,
 	};
-	if (form.date && form.date.value) d.date = form.date.value; // optional (we infer from report if absent)
+	if (form.date && form.date.value) d.date = form.date.value;
 	await addDuty(d);
 	await refresh();
 	form.reset();
@@ -250,17 +255,14 @@ $("#importFile")?.addEventListener("change", async (e) => {
 	const f = e.target.files?.[0];
 	if (!f) return;
 	const data = JSON.parse(await f.text());
-
 	const modeReplace = confirm(
 		"Import will REPLACE current data. OK to continue?"
 	);
 	if (!modeReplace) return;
-
 	await clearAll();
 	if (data.settings) await saveSettings(data.settings);
 	if (Array.isArray(data.duty)) for (const d of data.duty) await addDuty(d);
 	if (Array.isArray(data.sleep)) for (const s of data.sleep) await addSleep(s);
-
 	e.target.value = "";
 	await refresh();
 	alert("Import complete.");
@@ -319,7 +321,6 @@ document.addEventListener("keydown", async (e) => {
 
 /* ======================== Boot / Refresh ======================== */
 async function boot() {
-	// Load settings for forms
 	SETTINGS = await loadSettings();
 	if ($("#setChrono")) $("#setChrono").value = SETTINGS.chronotype;
 	if ($("#setBands"))
@@ -327,9 +328,8 @@ async function boot() {
 			"#setBands"
 		).value = `${SETTINGS.bands.good},${SETTINGS.bands.caution},${SETTINGS.bands.elevated}`;
 
-	// Register SW, then set version from SW, then theme/init
-	await setupSwUpdates();
-	await setVersionStamp();
+	await setupSwUpdates(); // register + update checks + banner logic
+	await setVersionStamp(); // footer label from active SW (or fallback)
 	await initTheme();
 
 	await refresh();
@@ -397,7 +397,6 @@ function spsPolicyFlags({ spsAtSignOn, predictedSP }) {
 function renderLegality(d, all) {
 	const badges = [];
 
-	// FDP limit + actual FDP
 	const limit = fdpLimitAccl(d.report, d.sectors || 1);
 	const actual = minutesBetween(d.report, d.off);
 	const remaining = Math.max(0, limit - actual);
@@ -413,53 +412,42 @@ function renderLegality(d, all) {
 		)
 	);
 
-	// Disruptive
 	const flags = classifyDisruptive(d.report, d.off);
 	if (flags.length) badges.push(badge(flags.join(" · "), "warn"));
 
-	// Cumulative + days-off with richer tones
 	const cum = computeCumulativeAndDaysOff(all, d.off);
 
-	// 7-day duty hours: >60 bad; >50 warn; else ok
 	let tone7 = "ok";
 	if (cum.hours7 > 60) tone7 = "bad";
 	else if (cum.hours7 > 50) tone7 = "warn";
 	badges.push(badge(`Duty last 7d: ${cum.hours7} h`, tone7));
 
-	// 28-day total (informational; warn if very high)
 	badges.push(
 		badge(`Duty last 28d: ${cum.hours28} h`, cum.hours28 <= 200 ? "ok" : "warn")
 	);
 
-	// Avg weekly (28d): >50 bad (OM gate)
 	const toneAvg = cum.avgWeekly28 <= 50 ? "ok" : "bad";
 	badges.push(
 		badge(`Avg weekly duty (28d): ${cum.avgWeekly28} h (≤50)`, toneAvg)
 	);
 
-	// Consecutive work days: >7 bad; ≥5 warn; else ok
 	let toneConsec = "ok";
 	if (cum.consecWork > 7) toneConsec = "bad";
 	else if (cum.consecWork >= 5) toneConsec = "warn";
 	badges.push(badge(`Consec work days: ${cum.consecWork}`, toneConsec));
 
-	// 2 consecutive off in 14: warn if missing
 	badges.push(
 		badge(
 			`2 off in last 14: ${cum.hasTwoIn14 ? "Yes" : "No"}`,
 			cum.hasTwoIn14 ? "ok" : "warn"
 		)
 	);
-
-	// ≥6 off in 28: warn if under
 	badges.push(
 		badge(
 			`Days off in last 28: ${cum.offIn28} (≥6)`,
 			cum.offIn28 >= 6 ? "ok" : "warn"
 		)
 	);
-
-	// Avg off per 28d over 84d: ≥8 desired
 	badges.push(
 		badge(
 			`Avg off/28d over 84d: ${cum.avgOffPer28} (≥8)`,
@@ -480,8 +468,6 @@ function renderLegality(d, all) {
 
 /* ======================== Fatigue ======================== */
 function toneFromScore(score, bands) {
-	// bands: { good, caution, elevated }
-	// High (worst) should be red; Elevated/Caution amber; Good green.
 	if (score < bands.elevated) return { tone: "bad", label: "High" };
 	if (score < bands.caution) return { tone: "warn", label: "Elevated" };
 	if (score < bands.good) return { tone: "warn", label: "Caution" };
@@ -502,13 +488,12 @@ function renderFatigue(d, allSleep) {
 	const score = fatigueScore({
 		priorSleep24: sleep.priorSleep24,
 		priorSleep48: sleep.priorSleep48,
-		timeAwakePeakHrs: awake.untilNextSleep, // peak exposure
-		timeAwakeHrs: awake.sinceWakeAtReport, // fallback/display
+		timeAwakePeakHrs: awake.untilNextSleep,
+		timeAwakeHrs: awake.sinceWakeAtReport,
 		woclOverlapMins: woclMins,
 		sps,
 	});
 
-	// Gauge color by band
 	const gauge = $("#fatigueGauge");
 	const band = toneFromScore(score, SETTINGS.bands);
 	gauge.textContent = Math.round(score);
@@ -518,8 +503,6 @@ function renderFatigue(d, allSleep) {
 	);
 
 	const chips = [];
-
-	// Core context chips (with light heuristics for tone)
 	chips.push(
 		chip(
 			`Sleep 24h: ${sleep.priorSleep24}h`,
@@ -559,7 +542,6 @@ function renderFatigue(d, allSleep) {
 		chips.push(chip(`SPS ${sps}`, spsTone));
 	}
 
-	// Advisory predicted SP + policy flags (color the advisories too)
 	const spPred = scoreToSP(score);
 	chips.push(
 		chip(
@@ -569,11 +551,9 @@ function renderFatigue(d, allSleep) {
 	);
 
 	const flags = spsPolicyFlags({ spsAtSignOn: sps, predictedSP: spPred });
-	for (const f of flags) chips.push(chip(f.text, f.level)); // f.level is "warn" or "bad"
+	for (const f of flags) chips.push(chip(f.text, f.level));
 
-	// Band chip (Good/Caution/Elevated/High), colored
 	chips.push(chip(band.label, band.tone));
-
 	renderList($("#fatigueChips"), chips);
 }
 
@@ -586,7 +566,6 @@ async function generatePDF(latest, all) {
 	let y = pad;
 
 	const cum = computeCumulativeAndDaysOff(all, latest.off);
-	const enr = earliestNextReport(latest.off, latest.location);
 	const sleep = sleepMetricsForReport(sleepAll, latest.report);
 	const woclMins = woclOverlapMinutes(
 		latest.report,
@@ -601,7 +580,6 @@ async function generatePDF(latest, all) {
 	);
 	const sps = latest.sps || null;
 
-	// Prefer SW cache label for version (matches footer), fallback to APP_VERSION
 	const meta = await askSwVersion();
 	const versionLabel = meta?.cache || APP_VERSION;
 
@@ -730,7 +708,6 @@ async function generatePDF(latest, all) {
 	doc.text(`Predicted SP (advisory): ~${spPred.toFixed(2)}`, pad, y);
 	y += 18;
 
-	// Policy notes
 	const policy = spsPolicyFlags({ spsAtSignOn: sps, predictedSP: spPred });
 	if (policy.length) {
 		for (const f of policy) {
