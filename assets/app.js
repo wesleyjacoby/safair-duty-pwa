@@ -28,9 +28,9 @@ import {
 import { badge, chip, $, renderList } from "./ui.js";
 
 // --- Release identifiers (keep in sync with sw.js) ---
-const SW_REG_VERSION = "2.95"; // used for ./sw.js?v=...
-const EXPECTED_CACHE = "safair-duty-v2.95"; // must equal CACHE in sw.js
-const APP_VERSION = "v2.95"; // fallback label
+const SW_REG_VERSION = "2.96"; // used for ./sw.js?v=...
+const EXPECTED_CACHE = "safair-duty-v2.96"; // must equal CACHE in sw.js
+const APP_VERSION = "v2.96"; // fallback label
 
 let deferredPrompt = null;
 let SETTINGS = null;
@@ -351,7 +351,7 @@ async function boot() {
 	await setupSwUpdates(); // register + update checks + banner logic
 	await setVersionStamp(); // footer label from active SW (or fallback)
 	await initTheme();
-	iosFriendlyDateInputs(); // iPad-friendly date/time
+	iosProxyDateInputs(); // iPad-friendly date/time
 	await refresh();
 }
 
@@ -809,53 +809,88 @@ function renderHistory(all) {
 	}
 }
 
-/* ======================== iOS-friendly date inputs ======================== */
-// Render as text until interaction, then open the native picker.
-// Also re-apply after form reset so the fields don't revert to the “dash”.
-function iosFriendlyDateInputs() {
+/* ======================== iOS-friendly date inputs (proxy) ========================
+   Keep a styled text input visible; drive a hidden native datetime-local input.
+   This avoids the “squash” during focus on iPad while still using the native picker.
+-----------------------------------------------------------------------------------*/
+function iosProxyDateInputs() {
 	const isiOS =
 		/iPad|iPhone|iPod/.test(navigator.userAgent) ||
 		(navigator.userAgent.includes("Mac") && "ontouchend" in document);
 	if (!isiOS) return;
 
-	const fields = [
+	const FIELDS = [
 		{ id: "report", type: "datetime-local", ph: "yyyy / mm / dd, --:--" },
 		{ id: "off", type: "datetime-local", ph: "yyyy / mm / dd, --:--" },
 		{ id: "sleepStart", type: "datetime-local", ph: "yyyy / mm / dd, --:--" },
 		{ id: "sleepEnd", type: "datetime-local", ph: "yyyy / mm / dd, --:--" },
 	];
 
-	for (const f of fields) {
-		const el = document.getElementById(f.id);
-		if (!el) continue;
-		el.dataset.nativeType = f.type;
+	const L = window.luxon?.DateTime;
+	const fmt = (v, t = "datetime-local") => {
+		if (!v) return "";
+		if (L) {
+			const dt = L.fromISO(v);
+			if (!dt.isValid) return v;
+			return t.startsWith("date")
+				? dt.toFormat("yyyy / MM / dd")
+				: dt.toFormat("yyyy / MM / dd, HH:mm");
+		}
+		return v.replace("T", ", "); // fallback
+	};
 
-		const setIdle = () => {
-			if (!el.value) {
-				el.type = "text";
-				el.placeholder = f.ph;
-			}
-		};
-		const openPicker = () => {
-			el.type = el.dataset.nativeType || f.type;
-			el.showPicker?.();
-		};
+	for (const f of FIELDS) {
+		const native = document.getElementById(f.id);
+		if (!native) continue;
 
-		setIdle();
-		el.addEventListener("focus", openPicker);
-		el.addEventListener("blur", setIdle);
-		el.addEventListener("input", () => {
-			if (!el.value) setIdle();
+		// Ensure native has the right type
+		native.type = f.type;
+
+		// Build a visible proxy text input that looks like the rest of your fields
+		const proxy = native.cloneNode(false);
+		proxy.type = "text";
+		proxy.id = f.id + "_display";
+		proxy.name = ""; // keep the native one in the form for reading/validation
+		proxy.placeholder = f.ph;
+		proxy.value = native.value ? fmt(native.value, f.type) : "";
+
+		// Insert proxy after native
+		native.parentElement.insertBefore(proxy, native.nextSibling);
+
+		// Hide native but keep it in the DOM so showPicker() works
+		Object.assign(native.style, {
+			position: "absolute",
+			opacity: "0",
+			pointerEvents: "none",
+			width: "1px",
+			height: "1px",
+			padding: "0",
+			margin: "0",
 		});
-		el.addEventListener("change", () => {
-			if (!el.value) setIdle();
+
+		// Open native picker whenever user focuses/clicks the proxy
+		const openPicker = () => native.showPicker?.();
+		proxy.addEventListener("focus", openPicker);
+		proxy.addEventListener("click", openPicker);
+
+		// Sync selection back to the proxy for display
+		const sync = () => {
+			proxy.value = native.value ? fmt(native.value, f.type) : "";
+		};
+		native.addEventListener("change", sync);
+		native.addEventListener("input", sync);
+
+		// If user clears the proxy, clear native too
+		proxy.addEventListener("input", () => {
+			if (proxy.value === "") native.value = "";
 		});
 
-		// Re-apply after the parent form resets (important on iPad)
-		if (el.form) {
-			el.form.addEventListener("reset", () => {
-				// Wait for the reset to clear the value, then re-apply text mode
-				requestAnimationFrame(setIdle);
+		// After form reset, clear the proxy as well
+		if (native.form) {
+			native.form.addEventListener("reset", () => {
+				requestAnimationFrame(() => {
+					proxy.value = "";
+				});
 			});
 		}
 	}
