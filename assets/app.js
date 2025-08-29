@@ -27,7 +27,8 @@ import {
 
 import { badge, chip, $, renderList } from "./ui.js";
 
-const APP_VERSION = "v1.0.1 (2025-08-29)";
+const APP_VERSION = "v1.1.0 (2025-08-29)";
+
 let deferredPrompt = null;
 let SETTINGS = null;
 let SELECTED_ID = null;
@@ -46,7 +47,6 @@ function applyTheme(theme) {
 	const toggle = document.getElementById("themeToggle");
 	if (toggle) toggle.checked = t === "dark";
 }
-
 async function initTheme() {
 	const s = await loadSettings();
 	applyTheme(s.theme || "light");
@@ -59,6 +59,15 @@ async function initTheme() {
 		SETTINGS = await saveSettings({ theme: next });
 		applyTheme(next);
 	});
+
+	// Legacy checkbox support
+	document
+		.getElementById("themeToggle")
+		?.addEventListener("change", async (e) => {
+			const next = e.target.checked ? "dark" : "light";
+			SETTINGS = await saveSettings({ theme: next });
+			applyTheme(next);
+		});
 }
 
 /* ======================== Install prompt ======================== */
@@ -83,7 +92,6 @@ if ("serviceWorker" in navigator) {
 			const sw = reg.installing;
 			sw?.addEventListener("statechange", () => {
 				if (sw.state === "installed" && navigator.serviceWorker.controller) {
-					// A new SW is waiting
 					const bar = $("#updateBar");
 					if (bar) bar.style.display = "flex";
 				}
@@ -96,7 +104,6 @@ if ("serviceWorker" in navigator) {
 		reg?.waiting?.postMessage({ type: "SKIP_WAITING" });
 	});
 
-	// When the controller changes, the new SW took over → reload
 	navigator.serviceWorker.addEventListener("controllerchange", () =>
 		location.reload()
 	);
@@ -125,7 +132,6 @@ $("#settingsForm")?.addEventListener("submit", async (e) => {
 $("#dutyForm")?.addEventListener("submit", async (e) => {
 	e.preventDefault();
 	const form = e.target;
-
 	const d = {
 		duty_type: form.dutyType.value || "FDP",
 		report: form.report.value,
@@ -134,13 +140,9 @@ $("#dutyForm")?.addEventListener("submit", async (e) => {
 		location: form.location.value || "Home",
 		sps: form.sps.value ? parseInt(form.sps.value, 10) : null,
 	};
-	// If a standalone date field exists, include it; otherwise db.js will infer from report
-	if (form.date && form.date.value) d.date = form.date.value;
-
+	if (form.date && form.date.value) d.date = form.date.value; // optional (we infer from report if absent)
 	await addDuty(d);
 	await refresh();
-
-	// Reset but keep handy defaults
 	form.reset();
 	$("#dutyType").value = "FDP";
 	$("#sectors").value = 2;
@@ -273,13 +275,7 @@ async function boot() {
 		($(
 			"#setBands"
 		).value = `${SETTINGS.bands.good},${SETTINGS.bands.caution},${SETTINGS.bands.elevated}`);
-	// defaults for New Duty inputs
-	$("#dutyType") && ($("#dutyType").value = "FDP");
-	$("#sectors") && ($("#sectors").value = 2);
-	$("#location") && ($("#location").value = "Home");
-	$("#sps") && ($("#sps").value = 3);
 
-	// Version stamp
 	const v = $("#versionStamp");
 	if (v) v.textContent = APP_VERSION;
 
@@ -316,10 +312,40 @@ async function refresh() {
 	}
 }
 
+/* ======================== Advisory SP mapping + policy flags ======================== */
+function scoreToSP(score) {
+	const s = Math.max(0, Math.min(100, score));
+	if (s >= 90) return 2.0;
+	if (s >= 80) return 2.5;
+	if (s >= 70) return 3.2;
+	if (s >= 60) return 3.8;
+	if (s >= 50) return 4.6; // near 4.75 gate
+	if (s >= 40) return 5.4;
+	if (s >= 30) return 6.0;
+	return 6.5;
+}
+function spsPolicyFlags({ spsAtSignOn, predictedSP }) {
+	const flags = [];
+	if (typeof spsAtSignOn === "number" && spsAtSignOn >= 6) {
+		flags.push({
+			level: "bad",
+			text: "SPS 6–7 at sign-on: off-load per OM/FRMP.",
+		});
+	}
+	if (typeof predictedSP === "number" && predictedSP > 4.75) {
+		flags.push({
+			level: "warn",
+			text: "Predicted SP > 4.75 (advisory) – reduce risk per FRMS.",
+		});
+	}
+	return flags;
+}
+
 /* ======================== Legality ======================== */
 function renderLegality(d, all) {
 	const badges = [];
 
+	// FDP limit + actual FDP
 	const limit = fdpLimitAccl(d.report, d.sectors || 1);
 	const actual = minutesBetween(d.report, d.off);
 	const remaining = Math.max(0, limit - actual);
@@ -335,36 +361,53 @@ function renderLegality(d, all) {
 		)
 	);
 
+	// Disruptive
 	const flags = classifyDisruptive(d.report, d.off);
 	if (flags.length) badges.push(badge(flags.join(" · "), "warn"));
 
+	// Cumulative + days-off with richer tones
 	const cum = computeCumulativeAndDaysOff(all, d.off);
-	const tone7 = cum.hours7 <= 60 ? "ok" : "bad";
-	badges.push(badge(`Duty last 7d: ${cum.hours7} h (≤60)`, tone7));
 
+	// 7-day duty hours: >60 bad; >50 warn; else ok
+	let tone7 = "ok";
+	if (cum.hours7 > 60) tone7 = "bad";
+	else if (cum.hours7 > 50) tone7 = "warn";
+	badges.push(badge(`Duty last 7d: ${cum.hours7} h`, tone7));
+
+	// 28-day total (informational; warn if very high)
 	badges.push(
 		badge(`Duty last 28d: ${cum.hours28} h`, cum.hours28 <= 200 ? "ok" : "warn")
 	);
 
+	// Avg weekly (28d): >50 bad (OM gate)
 	const toneAvg = cum.avgWeekly28 <= 50 ? "ok" : "bad";
 	badges.push(
 		badge(`Avg weekly duty (28d): ${cum.avgWeekly28} h (≤50)`, toneAvg)
 	);
 
-	if (cum.consecWork > 7) badges.push(badge(`>7 consecutive work days`, "bad"));
-	else badges.push(badge(`Consec work days: ${cum.consecWork}`, "ok"));
+	// Consecutive work days: >7 bad; ≥5 warn; else ok
+	let toneConsec = "ok";
+	if (cum.consecWork > 7) toneConsec = "bad";
+	else if (cum.consecWork >= 5) toneConsec = "warn";
+	badges.push(badge(`Consec work days: ${cum.consecWork}`, toneConsec));
+
+	// 2 consecutive off in 14: warn if missing
 	badges.push(
 		badge(
 			`2 off in last 14: ${cum.hasTwoIn14 ? "Yes" : "No"}`,
 			cum.hasTwoIn14 ? "ok" : "warn"
 		)
 	);
+
+	// ≥6 off in 28: warn if under
 	badges.push(
 		badge(
 			`Days off in last 28: ${cum.offIn28} (≥6)`,
 			cum.offIn28 >= 6 ? "ok" : "warn"
 		)
 	);
+
+	// Avg off per 28d over 84d: ≥8 desired
 	badges.push(
 		badge(
 			`Avg off/28d over 84d: ${cum.avgOffPer28} (≥8)`,
@@ -376,7 +419,7 @@ function renderLegality(d, all) {
 
 	const p = document.createElement("div");
 	p.innerHTML = `<div class="small muted">
-    These values are advisory and simplified (acclimatised). For edge cases, unusual pairings, 
+    These values are advisory and simplified (acclimatised). For edge cases, unusual pairings,
     or split duty specifics, always refer to OM / SA-CATS and company FRMS.
   </div>`;
 	$("#legalityNotes").innerHTML = "";
@@ -387,7 +430,7 @@ function renderLegality(d, all) {
 function renderFatigue(d, allSleep) {
 	const sleep = sleepMetricsForReport(allSleep, d.report);
 	const woclMins = woclOverlapMinutes(d.report, d.off, SETTINGS.chronotype);
-	const sps = d.sps || null;
+	const sps = d.sps ?? null;
 
 	const awake = timeAwakeAroundDuty(
 		allSleep,
@@ -405,6 +448,7 @@ function renderFatigue(d, allSleep) {
 	});
 
 	$("#fatigueGauge").textContent = Math.round(score);
+
 	const chips = [];
 	chips.push(chip(`Sleep 24h: ${sleep.priorSleep24}h`));
 	chips.push(chip(`Since wake @ report: ${awake.sinceWakeAtReport}h`));
@@ -424,7 +468,16 @@ function renderFatigue(d, allSleep) {
 				}`
 			)
 		);
-	if (sps) chips.push(chip(`SPS ${sps}`));
+	if (sps != null) chips.push(chip(`SPS ${sps}`));
+
+	// Advisory predicted SP + policy flags
+	const spPred = scoreToSP(score);
+	chips.push(chip(`Predicted SP ~ ${spPred.toFixed(2)} (advisory)`));
+	const flags = spsPolicyFlags({ spsAtSignOn: sps, predictedSP: spPred });
+	for (const f of flags) {
+		// Use chip for message; tone is implied by wording (bad/warn)
+		chips.push(chip(f.text));
+	}
 
 	const { good, caution, elevated } = SETTINGS.bands;
 	if (score < elevated) chips.push(chip("High"));
@@ -515,7 +568,7 @@ async function generatePDF(latest, all) {
 	doc.text("Cumulative", pad, y);
 	y += 14;
 	doc.setFont("helvetica", "");
-	doc.text(`Last 7 days duty: ${cum.hours7} h (limit 60)`, pad, y);
+	doc.text(`Last 7 days duty: ${cum.hours7} h`, pad, y);
 	y += 14;
 	doc.text(`Last 28 days total: ${cum.hours28} h`, pad, y);
 	y += 14;
@@ -576,9 +629,26 @@ async function generatePDF(latest, all) {
 		woclOverlapMins: woclMins,
 		sps,
 	});
+	const spPred = scoreToSP(score);
 	doc.setFont("helvetica", "bold");
 	doc.text(`Fatigue score: ${Math.round(score)} / 100`, pad, y);
-	y += 22;
+	y += 14;
+	doc.setFont("helvetica", "");
+	doc.text(`Predicted SP (advisory): ~${spPred.toFixed(2)}`, pad, y);
+	y += 18;
+
+	// Policy notes
+	const policy = spsPolicyFlags({ spsAtSignOn: sps, predictedSP: spPred });
+	if (policy.length) {
+		for (const f of policy) {
+			if (f.level === "bad") doc.setTextColor(180, 30, 30);
+			else if (f.level === "warn") doc.setTextColor(176, 128, 0);
+			doc.text(`• ${f.text}`, pad, y);
+			y += 14;
+			doc.setTextColor(0);
+		}
+		y += 6;
+	}
 
 	const next = earliestNextReport(latest.off, latest.location);
 	doc.setFont("helvetica", "bold");

@@ -1,11 +1,28 @@
 // assets/calc.js
 // Core calculations for legality, fatigue, and cumulative limits.
-
-// Use the global Luxon (UMD) instead of ESM import
+// Uses the global Luxon (UMD): <script src="vendor/luxon.min.js"></script>
 const { DateTime, Interval } = luxon;
 
-/* ======================== Utilities ======================== */
+/* ======================== Config ======================== */
+// Treat all OM time-bands in local SA time unless you later add time-zone inputs.
+const LOCAL_TZ = "Africa/Johannesburg";
 
+// WOCL window per FRMP alignment: 02:00–06:00 (with ±30m chronotype shift)
+const WOCL_START = { h: 2, m: 0 };
+const WOCL_END = { h: 6, m: 0 };
+
+/* FDP table (minutes): acclimatised, two-pilot, scheduled.
+   Bands are local report-time ranges; columns are sectors 1..8.
+   Replace numbers if your OM has slightly different values. */
+const FDP_TABLE = {
+	"0500-0659": [780, 735, 690, 645, 600, 555, 540, 540], // 13:00, 12:15, ...
+	"0700-1359": [840, 795, 750, 705, 660, 615, 570, 540], // 14:00, 13:15, ...
+	"1400-2059": [780, 735, 690, 645, 600, 555, 540, 540],
+	"2100-2159": [720, 675, 630, 585, 540, 540, 540, 540],
+	"2200-0459": [660, 615, 570, 540, 540, 540, 540, 540],
+};
+
+/* ======================== Utilities ======================== */
 export function minutesBetween(aIso, bIso) {
 	const a = DateTime.fromISO(aIso);
 	const b = DateTime.fromISO(bIso);
@@ -20,56 +37,50 @@ export function minToHM(mins) {
 	return `${h}:${mm}`;
 }
 
-function localHour(dt) {
-	return dt.setZone("Africa/Johannesburg", { keepLocalTime: true }).hour;
+function localize(dt) {
+	return dt.setZone(LOCAL_TZ, { keepLocalTime: true });
 }
 
-/* ======================== Disruptive ======================== */
+/* ======================== Disruptive flags (advisory) ======================== */
 export function classifyDisruptive(reportIso, offIso) {
 	const rpt = DateTime.fromISO(reportIso);
 	const off = DateTime.fromISO(offIso);
 	if (!rpt.isValid || !off.isValid) return [];
 
+	const rLocal = localize(rpt);
+	const oLocal = localize(off);
 	const flags = [];
-	const rh = localHour(rpt);
-	const oh = localHour(off);
 
-	if (rh >= 5 && rh <= 5) flags.push("Early start");
-	if (oh >= 23 || oh <= 1) flags.push("Late finish");
+	if (rLocal.hour === 5) flags.push("Early start");
+	if (oLocal.hour >= 23 || oLocal.hour <= 1) flags.push("Late finish");
 
-	// Night duty if any overlap with 02:00–04:59
-	const nightStart = rpt.startOf("day").set({ hour: 2, minute: 0 });
-	const nightEnd = rpt.startOf("day").set({ hour: 5, minute: 0 });
-	const duty = Interval.fromDateTimes(rpt, off);
+	// Night duty if any overlap with 02:00–04:59 local
+	const nightStart = rLocal.startOf("day").set({ hour: 2 });
+	const nightEnd = rLocal.startOf("day").set({ hour: 5 });
+	const duty = Interval.fromDateTimes(rLocal, oLocal);
 	if (duty.overlaps(Interval.fromDateTimes(nightStart, nightEnd)))
 		flags.push("Night duty");
 
 	return flags;
 }
 
-/* ======================== FDP Limit (acclimatised, two-pilot) ======================== */
+/* ======================== FDP Limit: OM-style table lookup ======================== */
 export function fdpLimitAccl(reportIso, sectors = 1) {
 	const rpt = DateTime.fromISO(reportIso);
-	if (!rpt.isValid) return 12 * 60;
-
-	const h = rpt.hour;
-	let base;
-	if (h >= 6 && h < 8) base = 12 * 60;
-	else if (h >= 8 && h < 13) base = 13 * 60;
-	else if (h >= 13 && h < 16) base = 12.5 * 60;
-	else if (h >= 16 && h < 20) base = 12 * 60;
-	else base = 11 * 60; // conservative early/late
-
+	if (!rpt.isValid) return 0;
+	const r = localize(rpt);
+	const hhmm = r.toFormat("HHmm");
+	let band = "2200-0459";
+	if (hhmm >= "0500" && hhmm <= "0659") band = "0500-0659";
+	else if (hhmm >= "0700" && hhmm <= "1359") band = "0700-1359";
+	else if (hhmm >= "1400" && hhmm <= "2059") band = "1400-2059";
+	else if (hhmm >= "2100" && hhmm <= "2159") band = "2100-2159";
+	// else remains 2200-0459
 	const s = Math.max(1, Math.min(8, sectors | 0));
-	const sectorPenalty = Math.max(0, s - 1) * 15; // 15 min per extra sector
-	let limit = base - sectorPenalty;
-
-	if (h >= 5 && h < 6) limit -= 30; // early-start penalty
-	limit = Math.max(9 * 60, Math.min(13.5 * 60, limit));
-	return Math.round(limit);
+	return FDP_TABLE[band][s - 1] || 0;
 }
 
-/* ======================== Split duty extension (kept for API) ======================== */
+/* ======================== Split duty extension (placeholder) ======================== */
 export function splitDutyExtensionMins(consecutiveRestMins) {
 	const r = Math.max(0, consecutiveRestMins | 0);
 	if (r < 180) return 0;
@@ -86,29 +97,24 @@ export function earliestNextReport(offIso, location = "Home") {
 		return { earliest: off.plus({ hours: 12 }), basis: "Home: 12h min rest" };
 	}
 
-	// Away logic (local night heuristic)
+	// Away logic with local-night heuristic
 	const try10 = off.plus({ hours: 10 });
 	const restInt10 = Interval.fromDateTimes(off, try10);
 
 	const dn = off.startOf("day");
-	const nightBand1 = Interval.fromDateTimes(
-		dn.set({ hour: 22 }),
-		dn.endOf("day")
-	);
-	const nightBand2 = Interval.fromDateTimes(
+	const night1 = Interval.fromDateTimes(dn.set({ hour: 22 }), dn.endOf("day"));
+	const night2 = Interval.fromDateTimes(
 		dn.minus({ days: 1 }).set({ hour: 22 }),
 		dn.set({ hour: 8 })
 	);
 
-	const hasLocalNight =
-		restInt10.overlaps(nightBand1) || restInt10.overlaps(nightBand2);
-	if (hasLocalNight)
+	const hasNight10 = restInt10.overlaps(night1) || restInt10.overlaps(night2);
+	if (hasNight10)
 		return { earliest: try10, basis: "Away: 10h incl. local night" };
 
 	const try12 = off.plus({ hours: 12 });
 	const restInt12 = Interval.fromDateTimes(off, try12);
-	const hasNight12 =
-		restInt12.overlaps(nightBand1) || restInt12.overlaps(nightBand2);
+	const hasNight12 = restInt12.overlaps(night1) || restInt12.overlaps(night2);
 	if (hasNight12)
 		return { earliest: try12, basis: "Away: 12h rest (no local night in 10h)" };
 
@@ -142,7 +148,7 @@ export function sleepMetricsForReport(allSleep, reportIso) {
 		return Math.round(total * 10) / 10;
 	}
 
-	// Last wake
+	// Last wake before report
 	let lastWake = null;
 	for (let i = sleeps.length - 1; i >= 0; i--) {
 		if (sleeps[i].end <= report) {
@@ -164,8 +170,8 @@ export function sleepMetricsForReport(allSleep, reportIso) {
 
 /* ======================== WOCL overlap ======================== */
 export function woclOverlapMinutes(reportIso, offIso, chronotype = "neutral") {
-	const rpt = DateTime.fromISO(reportIso);
-	const off = DateTime.fromISO(offIso);
+	const rpt = localize(DateTime.fromISO(reportIso));
+	const off = localize(DateTime.fromISO(offIso));
 	if (!rpt.isValid || !off.isValid) return 0;
 
 	let shiftMin = 0;
@@ -173,8 +179,12 @@ export function woclOverlapMinutes(reportIso, offIso, chronotype = "neutral") {
 	if (chronotype === "late") shiftMin = 30;
 
 	const day = rpt.startOf("day");
-	const start = day.set({ hour: 2, minute: 0 }).plus({ minutes: shiftMin });
-	const end = day.set({ hour: 5, minute: 0 }).plus({ minutes: shiftMin });
+	const start = day
+		.set({ hour: WOCL_START.h, minute: WOCL_START.m })
+		.plus({ minutes: shiftMin });
+	const end = day
+		.set({ hour: WOCL_END.h, minute: WOCL_END.m })
+		.plus({ minutes: shiftMin });
 
 	const duty = Interval.fromDateTimes(rpt, off);
 	const wocl = Interval.fromDateTimes(start, end);
@@ -217,8 +227,7 @@ export function timeAwakeAroundDuty(allSleep, reportIso, offIso, chronotype) {
 	}
 
 	const nextSleep = estimateBedtime(offIso, chronotype);
-	const until = Math.max(0, nextSleep.diff(off, "hours").hours);
-	untilNextSleep = until;
+	untilNextSleep = Math.max(0, nextSleep.diff(off, "hours").hours);
 
 	return {
 		sinceWakeAtReport: Math.round(sinceWakeAtReport * 10) / 10,
