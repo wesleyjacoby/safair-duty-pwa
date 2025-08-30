@@ -382,6 +382,11 @@ textarea:focus {
 	padding: 10px 12px;
 }
 
+/* Add comfortable spacing between entries in Duty Log */
+#history .chip {
+	margin: 6px 0;
+}
+
 /* ---------- Footer ---------- */
 .footer {
 	display: flex;

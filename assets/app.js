@@ -2,7 +2,6 @@
 // UI wiring + storage + exports. OM Table 9-1 (always acclimatised).
 
 import {
-	RULES,
 	normalizeDuty,
 	dt,
 	durMins,
@@ -60,14 +59,14 @@ function setTheme(dark) {
 setTheme(isDark());
 themeBtn?.addEventListener("click", () => setTheme(!isDark()));
 
-/* ---------------- Tiny toast helper ---------------- */
-function toast(message, type = "info", timeoutMs = 2200) {
-	let holder = document.getElementById("toasts");
-	if (!holder) {
-		holder = document.createElement("div");
-		holder.id = "toasts";
-		holder.setAttribute("aria-live", "polite");
-		Object.assign(holder.style, {
+/* ---------------- Toast ---------------- */
+function toast(msg, type = "info", ms = 2200) {
+	let h = document.getElementById("toasts");
+	if (!h) {
+		h = document.createElement("div");
+		h.id = "toasts";
+		h.setAttribute("aria-live", "polite");
+		Object.assign(h.style, {
 			position: "fixed",
 			right: "14px",
 			bottom: "14px",
@@ -76,10 +75,10 @@ function toast(message, type = "info", timeoutMs = 2200) {
 			gap: "8px",
 			maxWidth: "80vw",
 		});
-		document.body.appendChild(holder);
+		document.body.appendChild(h);
 	}
-	const el = document.createElement("div");
-	el.textContent = message;
+	const e = document.createElement("div");
+	e.textContent = msg;
 	const bg =
 		type === "bad"
 			? "#c62828"
@@ -88,21 +87,21 @@ function toast(message, type = "info", timeoutMs = 2200) {
 			: type === "success"
 			? "#1e8e3e"
 			: "#2458e6";
-	Object.assign(el.style, {
+	Object.assign(e.style, {
 		padding: "10px 12px",
 		borderRadius: "10px",
 		color: "#fff",
-		font: "14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif",
+		font: "14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif",
 		boxShadow: "0 6px 20px rgba(0,0,0,.15)",
 		background: bg,
 	});
-	holder.appendChild(el);
+	h.appendChild(e);
 	setTimeout(() => {
-		el.style.opacity = "0";
-		el.style.transform = "translateY(6px)";
-		el.style.transition = "all .2s ease";
-		setTimeout(() => el.remove(), 220);
-	}, timeoutMs);
+		e.style.opacity = "0";
+		e.style.transform = "translateY(6px)";
+		e.style.transition = "all .2s ease";
+		setTimeout(() => e.remove(), 220);
+	}, ms);
 }
 
 /* ---------------- Helpers ---------------- */
@@ -178,12 +177,14 @@ async function getAllDutiesSorted() {
 async function saveDuty() {
 	const d = formToDuty();
 	const isStandby = (d.dutyType || "").toLowerCase() === "standby";
+	const hasFDP = Boolean(d.report && d.off);
 
-	if (isStandby && !d.sbCalled) {
+	if (isStandby && !d.sbCalled && !hasFDP) {
 		if (!d.sbStart || !d.sbEnd) {
 			alert("Please enter Standby Window Start and End.");
 			return;
 		}
+		d.sectors = 0; // standby-only -> no legs
 	} else {
 		if (!d.report || !d.off) {
 			alert("Please enter both Sign On and Sign Off.");
@@ -195,12 +196,23 @@ async function saveDuty() {
 		}
 	}
 
-	if (d.id) await db.duties.update(d.id, d);
-	else d.id = await db.duties.add(d);
+	if (d.id) {
+		const updated = await db.duties.update(d.id, d);
+		if (!updated) {
+			const copy = { ...d };
+			delete copy.id;
+			d.id = await db.duties.add(copy);
+		}
+	} else {
+		d.id = await db.duties.add(d);
+	}
 
 	selectedId = d.id;
 	await renderAll();
 	toast("Duty saved", "success");
+	selectedId = null;
+	form.reset();
+	updateStandbyVisibility();
 }
 async function deleteSelected() {
 	if (!selectedId) return;
@@ -224,24 +236,37 @@ async function clearAll() {
 function renderBadges(container, badges) {
 	container.innerHTML = "";
 	for (const b of badges) {
-		const span = document.createElement("span");
-		span.className = `badge ${b.status}`;
-		span.textContent = b.text;
-		container.appendChild(span);
+		const s = document.createElement("span");
+		s.className = `badge ${b.status}`;
+		s.textContent = b.text;
+		container.appendChild(s);
 	}
 }
-function renderFlags(listEl, flags) {
+function renderFlagsGrouped(listEl, byMonth) {
 	listEl.innerHTML = "";
-	if (!flags.length) {
+	const months = [...byMonth.keys()].sort().reverse(); // newest first
+	if (!months.length) {
 		const li = document.createElement("li");
 		li.textContent = "No flagged items.";
 		listEl.appendChild(li);
 		return;
 	}
-	for (const f of flags) {
-		const li = document.createElement("li");
-		li.innerHTML = `<strong>${f.level.toUpperCase()}:</strong> ${f.text}`;
-		listEl.appendChild(li);
+	for (const ym of months) {
+		const head = document.createElement("li");
+		head.textContent = DateTime.fromFormat(ym, "yyyy-LL").toFormat("LLLL yyyy");
+		Object.assign(head.style, {
+			background: "transparent",
+			border: "none",
+			padding: "6px 0 0",
+			color: "var(--muted)",
+			fontWeight: "700",
+		});
+		listEl.appendChild(head);
+		for (const f of byMonth.get(ym)) {
+			const li = document.createElement("li");
+			li.innerHTML = `<strong>${f.level.toUpperCase()}:</strong> ${f.text}`;
+			listEl.appendChild(li);
+		}
 	}
 }
 function renderQuickStats(boxEl, stats) {
@@ -268,26 +293,7 @@ function renderQuickStats(boxEl, stats) {
 			}`
 		)
 	);
-	boxEl.appendChild(
-		make(
-			`Earliest report: ${
-				averages.earliestReportISO
-					? DateTime.fromISO(averages.earliestReportISO).toFormat(
-							"HH:mm, d LLL"
-					  )
-					: "—"
-			}`
-		)
-	);
-	boxEl.appendChild(
-		make(
-			`Latest report: ${
-				averages.latestReportISO
-					? DateTime.fromISO(averages.latestReportISO).toFormat("HH:mm, d LLL")
-					: "—"
-			}`
-		)
-	);
+	// (4) remove earliest/latest report cards
 	boxEl.appendChild(
 		make(`Common report window: ${averages.commonReportWindow || "—"}`)
 	);
@@ -301,7 +307,7 @@ function renderQuickStats(boxEl, stats) {
 	);
 	boxEl.appendChild(
 		make(`Away-nights (this month): ${counts.awayNightsThisMonth}`)
-	);
+	); // (5) no undefined now
 
 	if (standby) {
 		boxEl.appendChild(make(`Standby used: ${standby.usedPct}%`));
@@ -326,6 +332,7 @@ function renderHistory(div, duties) {
 		const key = dt(d.report || d.sbStart || Date.now()).toFormat("yyyy-LL");
 		(groups.get(key) || groups.set(key, []).get(key)).push(d);
 	}
+
 	for (const [ym, arr] of groups) {
 		const wrap = document.createElement("div");
 		const title = document.createElement("div");
@@ -346,24 +353,31 @@ function renderHistory(div, duties) {
 			row.style.justifyContent = "space-between";
 			row.style.display = "flex";
 			row.style.gap = "10px";
+			row.style.margin = "6px 0";
 			if (selectedId === d.id) row.classList.add("ok");
+
 			const left = R?.isValid
 				? `${R.toFormat("dd LLL HH:mm")} → ${
 						O?.isValid ? O.toFormat("HH:mm") : "—"
 				  }`
 				: "—";
-			const durText =
-				d.report && d.off
-					? toHM(durMins(d.report, d.off))
-					: d.sbStart && d.sbEnd
-					? `SB ${toHM(durMins(d.sbStart, d.sbEnd))}`
-					: "—";
-			row.innerHTML = `
-        <span>${left}</span>
-        <span>${d.dutyType || "FDP"} · ${Number(
-				d.sectors || 0
-			)} legs · ${durText}</span>
-      `;
+
+			const hasFDP = Boolean(d.report && d.off);
+			const isStandbyOnly =
+				String(d.dutyType || "").toLowerCase() === "standby" &&
+				!d.sbCalled &&
+				!hasFDP;
+			const sbText =
+				d.sbStart && d.sbEnd ? `SB ${toHM(durMins(d.sbStart, d.sbEnd))}` : "—";
+			const fdpText = hasFDP ? toHM(durMins(d.report, d.off)) : sbText;
+
+			const right = isStandbyOnly
+				? `Standby · ${sbText}`
+				: `${d.dutyType || "FDP"} · ${Number(
+						d.sectors || 0
+				  )} legs · ${fdpText}`;
+
+			row.innerHTML = `<span>${left}</span><span>${right}</span>`;
 			row.addEventListener("click", async () => {
 				selectedId = d.id;
 				dutyToForm(d);
@@ -396,7 +410,7 @@ async function computeAndRender() {
 		? duties[duties.findIndex((d) => d.id === selected.id) + 1] || null
 		: null;
 
-	// Single-duty legality + notes
+	// Single-duty legality & notes
 	let combined = [];
 	if (selected) {
 		const { badges, notes } = dutyLegality(selected, prev);
@@ -413,47 +427,49 @@ async function computeAndRender() {
 		legalityNotes.textContent = "";
 	}
 
-	// Rolling badges
+	// Rolling badges (2 & 3 handled in calc.js)
 	const roll = rollingStats(duties, DateTime.local());
 	combined.push(...badgesFromRolling(roll));
 	renderBadges(legalityBadges, combined);
 
-	// Flags (last 28 days)
-	const cutoff = DateTime.local().minus({ days: 28 });
-	let agg = [];
+	// Flagged items (6) — group by month, show up to last 12 months
+	const oldest = DateTime.local().minus({ months: 12 }).startOf("month");
+	const byMonth = new Map();
 	for (let i = 0; i < duties.length; i++) {
 		const d = duties[i],
-			dPrev = duties[i + 1] || null,
-			when = dt(d.report || d.sbStart);
-		if (when && when < cutoff) break;
+			dPrev = duties[i + 1] || null;
+		const when = dt(d.report || d.sbStart);
+		if (!when?.isValid || when < oldest) continue;
+		const ym = when.toFormat("yyyy-LL");
+		const group = byMonth.get(ym) || [];
 		const fs = flagsForDuty(d, dPrev, roll);
-		agg.push(
-			...fs.map((f) => ({
+		for (const f of fs)
+			group.push({
 				level: f.level,
-				text: `${when?.toFormat("dd LLL") || "—"}: ${f.text}`,
-			}))
-		);
+				text: `${when.toFormat("dd LLL")}: ${f.text}`,
+			});
+		if (fs.length) byMonth.set(ym, group);
 	}
-	renderFlags(flagsFeed, agg.slice(0, 20));
+	renderFlagsGrouped(flagsFeed, byMonth);
 
-	// Quick stats, history, footer
+	// Quick stats & history
 	renderQuickStats(quickStatsBox, quickStats(duties));
 	renderHistory(historyDiv, duties);
 	versionStamp.textContent = APP_VERSION;
 }
 
-/* -------- Wrapper (fix for "renderAll is not defined") -------- */
+/* ---------------- Wrapper ---------------- */
 async function renderAll() {
 	await computeAndRender();
 }
 
 /* ---------------- Export / Import ---------------- */
-function dutiesToJSON(duties) {
-	return JSON.stringify(duties, null, 2);
+function dutiesToJSON(d) {
+	return JSON.stringify(d, null, 2);
 }
 function dutiesFromJSON(text) {
 	const arr = JSON.parse(text);
-	if (!Array.isArray(arr)) throw new Error("Invalid JSON (expected an array).");
+	if (!Array.isArray(arr)) throw new Error("Invalid JSON");
 	return arr.map(normalizeDuty);
 }
 function dutiesToCSV(duties) {
@@ -511,23 +527,23 @@ function downloadBlob(blob, filename) {
 	URL.revokeObjectURL(url);
 }
 
-/* ---------------- PDF Export ---------------- */
+/* ---------------- PDF ---------------- */
 async function exportPDF() {
 	const duties = await getAllDutiesSorted();
 	const { jsPDF } = window.jspdf;
 	const doc = new jsPDF({ orientation: "p", unit: "pt", format: "a4" });
 	const margin = 36;
 	let y = margin;
-	const line = (text, size = 11, bold = false) => {
+	const line = (t, size = 11, bold = false) => {
 		doc.setFont("helvetica", bold ? "bold" : "normal");
 		doc.setFontSize(size);
-		const lines = doc.splitTextToSize(text, 522);
-		for (const l of lines) {
+		const lines = doc.splitTextToSize(t, 522);
+		for (const L of lines) {
 			if (y > 800) {
 				doc.addPage();
 				y = margin;
 			}
-			doc.text(l, margin, y);
+			doc.text(L, margin, y);
 			y += size + 4;
 		}
 	};

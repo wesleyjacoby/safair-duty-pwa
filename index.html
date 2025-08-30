@@ -48,14 +48,6 @@
 
             <form id="dutyForm">
                 <div class="grid two">
-                    <label>Sign On (local)
-                        <input type="datetime-local" id="report" name="report" />
-                    </label>
-
-                    <label>Sign Off (local)
-                        <input type="datetime-local" id="off" name="off" />
-                    </label>
-
                     <label>Duty Type
                         <select id="dutyType" name="dutyType">
                             <option>FDP</option>
@@ -66,6 +58,14 @@
                             <option>Positioning</option>
                             <option>Rest</option>
                         </select>
+                    </label>
+
+                    <label>Sign On (local)
+                        <input type="datetime-local" id="report" name="report" />
+                    </label>
+
+                    <label>Sign Off (local)
+                        <input type="datetime-local" id="off" name="off" />
                     </label>
 
                     <label>Sectors (count)
@@ -84,21 +84,25 @@
 
                 <div class="grid three" style="margin-top:12px">
                     <label>Discretion Used? (mins)
-                        <input type="number" id="discretionMins" min="0" step="1" placeholder="0" />
+                        <input type="number" id="discretionMins" name="discretionMins" min="0" step="1"
+                            placeholder="0" />
                     </label>
 
                     <label>Reason (if discretion used)
-                        <input type="text" id="discretionReason" placeholder="WX / ATC / Tech / Ops / Crew / Pax…" />
+                        <input type="text" id="discretionReason" name="discretionReason"
+                            placeholder="WX / ATC / Tech / Ops / Crew / Pax…" />
                     </label>
 
                     <label>Approved by
-                        <input type="text" id="discretionBy" placeholder="Duty Controller / Captain / Ops" />
+                        <input type="text" id="discretionBy" name="discretionBy"
+                            placeholder="Duty Controller / Captain / Ops" />
                     </label>
                 </div>
 
                 <div class="grid one">
                     <label>Notes
-                        <textarea id="notes" rows="2" placeholder="Anything notable for audit/export…"></textarea>
+                        <textarea id="notes" name="notes" rows="2"
+                            placeholder="Anything notable for audit/export…"></textarea>
                     </label>
                 </div>
 
@@ -112,32 +116,32 @@
 
                     <div class="grid three roomy">
                         <label>Standby Type
-                            <select id="sbType">
+                            <select id="sbType" name="sbType">
                                 <option>Home</option>
                                 <option>Airport</option>
                             </select>
                         </label>
 
                         <label>Window Start (local)
-                            <input type="datetime-local" id="sbStart" />
+                            <input type="datetime-local" id="sbStart" name="sbStart" />
                         </label>
 
                         <label>Window End (local)
-                            <input type="datetime-local" id="sbEnd" />
+                            <input type="datetime-local" id="sbEnd" name="sbEnd" />
                         </label>
                     </div>
 
                     <div class="grid three roomy">
                         <label>Called out?
                             <span class="switch">
-                                <input type="checkbox" id="sbCalled" />
+                                <input type="checkbox" id="sbCalled" name="sbCalled" />
                                 <span class="slider"></span>
                                 <span class="switch-labels" data-on="Yes" data-off="No"></span>
                             </span>
                         </label>
 
                         <label>Call Time (local)
-                            <input type="datetime-local" id="sbCall" />
+                            <input type="datetime-local" id="sbCall" name="sbCall" />
                         </label>
 
                         <label>Converted FDP Start (info)
