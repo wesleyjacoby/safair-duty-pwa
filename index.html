@@ -2,186 +2,232 @@
 <html lang="en">
 <head>
     <meta charset="utf-8" />
-    <title>Duty & Fatigue (Safair)</title>
+    <title>Safair Duty Tracker</title>
 
-    <!-- Single, full-featured viewport -->
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-
-    <!-- PWA meta -->
     <meta name="theme-color" content="#f7f8fa" />
-    <meta name="apple-mobile-web-app-title" content="Duty & Fatigue" />
+    <meta name="apple-mobile-web-app-title" content="Safair Duty" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
     <link rel="apple-touch-icon" href="icons/icon-512.png" />
-    <link rel="icon" href="icons/icon-192.png" />
+    <link rel="icon" sizes="192x192" href="icons/icon-192.png" />
     <link rel="manifest" href="manifest.webmanifest" />
 
-    <!-- Styles -->
     <link rel="stylesheet" href="assets/app.css" />
 
-    <!-- Vendor scripts -->
     <script defer src="vendor/luxon.min.js"></script>
     <script defer src="vendor/dexie.min.js"></script>
     <script defer src="vendor/jspdf.umd.min.js"></script>
 
-    <!-- App (handles SW registration & updates internally) -->
     <script type="module" src="assets/app.js"></script>
 </head>
-
 <body>
-    <!-- Top bar -->
     <header class="topbar container">
-        <h1>Safair Duty &amp; Fatigue</h1>
+        <h1>Safair Duty Tracker</h1>
         <div class="sp"></div>
 
-        <!-- Theme toggle -->
         <button id="themeBtn" class="btn ghost toggle" aria-pressed="false" type="button">Dark</button>
 
-        <!-- Actions -->
-        <button id="btnExport" class="btn ghost" title="Export JSON">Export</button>
+        <button id="btnExport" class="btn ghost" title="Export JSON/CSV">Export</button>
         <button id="btnImport" class="btn ghost" title="Import JSON">Import</button>
         <input id="importFile" type="file" accept="application/json" hidden />
         <button id="btnPDF" class="btn ghost" title="Generate PDF">PDF</button>
-
-        <!-- PWA install -->
-        <button id="btnInstall" class="btn" title="Install app" disabled>Install</button>
     </header>
 
     <main class="container">
-        <!-- SETTINGS -->
-        <section class="panel">
-            <h2>Settings</h2>
-            <div class="small muted" style="margin-bottom:8px">
-                Saved locally. Chronotype shifts WOCL by ±30 min. Theme toggle is in the header.
-            </div>
-            <form id="settingsForm">
-                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
-                    <label>Chronotype (diurnal type)
-                        <select id="setChrono">
-                            <option value="neutral">Neutral (default)</option>
-                            <option value="early">Early (lark)</option>
-                            <option value="late">Late (owl)</option>
-                        </select>
-                    </label>
-
-                    <label>Fatigue bands (Good / Caution / Elevated)
-                        <input type="text" id="setBands" value="80,60,45" />
-                        <span class="small muted">Comma: e.g. <code>80,60,45</code></span>
-                    </label>
-                </div>
-                <div style="margin-top:16px">
-                    <button class="btn" type="submit">Save Settings</button>
-                </div>
-            </form>
-        </section>
 
         <!-- NEW DUTY -->
         <section class="panel">
-            <h2>New Duty</h2>
+            <div class="panel-header">
+                <h2>New Duty</h2>
+                <div class="muted small">
+                    For Standby: log the standby window below. If called out, enter the FDP Report/Off here too.
+                </div>
+            </div>
+
             <form id="dutyForm">
-                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+                <div class="grid two">
                     <label>Sign On (local)
-                        <input type="datetime-local" id="report" name="report" required />
+                        <input type="datetime-local" id="report" name="report" />
                     </label>
+
                     <label>Sign Off (local)
-                        <input type="datetime-local" id="off" name="off" required />
+                        <input type="datetime-local" id="off" name="off" />
                     </label>
+
                     <label>Duty Type
                         <select id="dutyType" name="dutyType">
                             <option>FDP</option>
                             <option>Standby</option>
-                            <option>Flight Watch</option>
-                            <option>Home Reserve</option>
-                            <option>Positioning</option>
                             <option>Ground</option>
+                            <option>Training</option>
+                            <option>Office</option>
+                            <option>Positioning</option>
                             <option>Rest</option>
                         </select>
                     </label>
+
                     <label>Sectors (count)
                         <input type="number" id="sectors" name="sectors" min="0" max="8" value="2" />
                     </label>
+
                     <label>Location
                         <select id="location" name="location">
                             <option>Home</option>
                             <option>Away</option>
                         </select>
                     </label>
-                    <label>SPS (1–7)
-                        <input type="number" id="sps" name="sps" min="1" max="7" value="3" />
+
+                    <input type="number" id="sps" name="sps" value="3" hidden />
+                </div>
+
+                <div class="grid three" style="margin-top:12px">
+                    <label>Discretion Used? (mins)
+                        <input type="number" id="discretionMins" min="0" step="1" placeholder="0" />
+                    </label>
+
+                    <label>Reason (if discretion used)
+                        <input type="text" id="discretionReason" placeholder="WX / ATC / Tech / Ops / Crew / Pax…" />
+                    </label>
+
+                    <label>Approved by
+                        <input type="text" id="discretionBy" placeholder="Duty Controller / Captain / Ops" />
                     </label>
                 </div>
-                <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
+
+                <div class="grid one">
+                    <label>Notes
+                        <textarea id="notes" rows="2" placeholder="Anything notable for audit/export…"></textarea>
+                    </label>
+                </div>
+
+                <!-- STANDBY / RESERVE -->
+                <fieldset id="sbSection" class="fieldset sbcard" style="margin-top:16px; display:none;">
+                    <legend>Standby / Reserve</legend>
+
+                    <div class="muted small" style="margin-bottom:8px">
+                        Log the standby window. If you’re called out, also fill Report/Off above for the resulting FDP.
+                    </div>
+
+                    <div class="grid three roomy">
+                        <label>Standby Type
+                            <select id="sbType">
+                                <option>Home</option>
+                                <option>Airport</option>
+                            </select>
+                        </label>
+
+                        <label>Window Start (local)
+                            <input type="datetime-local" id="sbStart" />
+                        </label>
+
+                        <label>Window End (local)
+                            <input type="datetime-local" id="sbEnd" />
+                        </label>
+                    </div>
+
+                    <div class="grid three roomy">
+                        <label>Called out?
+                            <span class="switch">
+                                <input type="checkbox" id="sbCalled" />
+                                <span class="slider"></span>
+                                <span class="switch-labels" data-on="Yes" data-off="No"></span>
+                            </span>
+                        </label>
+
+                        <label>Call Time (local)
+                            <input type="datetime-local" id="sbCall" />
+                        </label>
+
+                        <label>Converted FDP Start (info)
+                            <input type="text" id="sbConvertedFdp" placeholder="auto-calc later" disabled />
+                        </label>
+                    </div>
+                </fieldset>
+
+                <div class="actions">
                     <button class="btn primary" type="submit">Save Duty</button>
-                    <button id="btnDeleteDuty" class="btn danger" type="button" title="Delete selected duty">Delete
-                        selected duty</button>
+                    <button id="btnDeleteDuty" class="btn danger" type="button" title="Delete selected duty">
+                        Delete selected duty
+                    </button>
                 </div>
             </form>
         </section>
 
-        <!-- LEGALITY -->
+        <!-- DUTY LEGALITY -->
         <section class="panel">
-            <h2>Selected Duty Legality</h2>
-            <div id="legalityBadges" class="badges"></div>
-            <div id="legalityNotes" class="small muted" style="margin-top:8px"></div>
+            <div class="panel-header">
+                <h2>Duty Legality</h2>
+                <div class="muted small">FDP limit (acclimatised), sectors, rest, standby & cumulative windows.</div>
+            </div>
+            <div id="legalityBadges" class="badges badges-xl"></div>
+            <div id="legalityNotes" class="small muted" style="margin-top:8px; display:none;"></div>
         </section>
 
-        <!-- FATIGUE -->
+        <!-- QUICK STATS -->
         <section class="panel">
-            <h2>Fatigue (Advisory)</h2>
-            <div id="fatigueGauge">—</div>
-            <div id="fatigueChips" class="chips" style="margin-top:8px"></div>
-            <div class="muted small" style="margin-top:6px">Advisory only; aligns with FRMP + SPS.</div>
+            <div class="panel-header">
+                <h2>Averages & Counts</h2>
+                <div class="muted small">Rolling, lightweight summaries.</div>
+            </div>
+            <div class="badges" id="quickStats"></div>
         </section>
 
-        <!-- SLEEP -->
+        <!-- FLAGGED ITEMS -->
         <section class="panel">
-            <h2>Sleep Diary</h2>
-            <form id="sleepForm">
-                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
-                    <label>Start (local)
-                        <input type="datetime-local" id="sleepStart" required />
-                    </label>
-                    <label>End (local)
-                        <input type="datetime-local" id="sleepEnd" required />
-                    </label>
-                    <label>Type
-                        <select id="sleepType">
-                            <option value="main">Main</option>
-                            <option value="nap">Nap</option>
-                        </select>
-                    </label>
-                    <label>Quality (1–5)
-                        <input type="number" id="sleepQuality" min="1" max="5" value="3" step="0.5" />
-                    </label>
-                </div>
-                <div style="margin-top:16px">
-                    <button class="btn" type="submit">Add Sleep</button>
-                </div>
-            </form>
-            <div id="sleepList" class="small muted" style="margin-top:8px"></div>
+            <div class="panel-header">
+                <h2>Flagged Items</h2>
+                <div class="muted small">Anything that violated or came close to a limit.</div>
+            </div>
+            <ul id="flagsFeed" class="feed"></ul>
         </section>
 
-        <!-- HISTORY -->
+        <!-- DUTY LOG -->
         <section class="panel">
-            <h2>History</h2>
+            <div class="panel-header">
+                <h2>Duty Log</h2>
+                <div class="muted small">↑/↓ to change selection; Del to delete selected.</div>
+            </div>
             <div id="history"></div>
-            <div class="small muted" style="margin-top:8px">Tip: ↑/↓ to change selection; Del to delete selected.</div>
         </section>
     </main>
 
-    <footer class="container"
-        style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:24px">
-        <div class="small muted"><span id="versionStamp"></span></div>
-        <div style="display:flex;gap:8px">
-            <button id="btnClear" class="btn danger">Clear All (local)</button>
-        </div>
+    <footer class="container footer">
+        <div class="small muted"><span id="versionStamp" title="OM tables aligned"></span></div>
+        <div><button id="btnClear" class="btn danger">Clear All (local)</button></div>
     </footer>
 
-    <!-- Update-available banner -->
     <div id="updateBar" class="panel container" role="status" aria-live="polite" style="display:none">
         A new version is available.
         <button id="btnUpdateNow" class="btn primary small">Reload</button>
     </div>
+
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', async () => {
+                try {
+                    const reg = await navigator.serviceWorker.register('./sw.js');
+                    reg.addEventListener('updatefound', () => {
+                        const nw = reg.installing;
+                        if (!nw) return;
+                        nw.addEventListener('statechange', () => {
+                            if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+                                const bar = document.getElementById('updateBar');
+                                if (bar) bar.style.display = 'block';
+                            }
+                        });
+                    });
+                    navigator.serviceWorker.addEventListener('controllerchange', () => window.location.reload());
+                    const btn = document.getElementById('btnUpdateNow');
+                    if (btn) btn.addEventListener('click', async () => {
+                        const reg2 = await navigator.serviceWorker.getRegistration();
+                        if (reg2?.waiting) reg2.waiting.postMessage('SKIP_WAITING');
+                        else if (reg2?.active) reg2.active.postMessage('SKIP_WAITING');
+                    });
+                } catch (e) { console.error('SW reg failed', e); }
+            });
+        }
+    </script>
 </body>
 </html>

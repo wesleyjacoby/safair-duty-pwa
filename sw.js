@@ -1,54 +1,46 @@
-// sw.js — cache-first PWA SW tailored for GitHub Pages
-const CACHE = "safair-duty-v3.13"; // ← bump each release
+/* sw.js — offline-first PWA for Safair Duty Tracker
+   - Precache core assets
+   - Cache-first for same-origin static assets
+   - Network-first for navigations (fallback to cached index.html)
+*/
+const CACHE = "safair-duty-v4"; // bump on any asset changes
 
-// Assets relative to the repo root (no leading slash)
-const ASSETS = [
-	"index.html",
-	"manifest.webmanifest",
-	"assets/app.css",
-	"assets/app.js",
-	"assets/calc.js",
-	"assets/db.js",
-	"assets/ui.js",
-	"assets/om_tables.js",
-	"vendor/dexie.min.js",
-	"vendor/luxon.min.js",
-	"vendor/jspdf.umd.min.js",
-	"icons/icon-192.png",
-	"icons/icon-512.png",
+const CORE_ASSETS = [
+	"./",
+	"./index.html",
+	"./assets/app.css",
+	"./assets/app.js",
+	"./assets/calc.js",
+	"./vendor/luxon.min.js",
+	"./vendor/dexie.min.js",
+	"./vendor/jspdf.umd.min.js",
+	"./icons/icon-192.png",
+	"./icons/icon-512.png",
+	"./manifest.webmanifest",
 ];
-
-// Resolve against SW scope so it works under /<repo> on GH Pages
-const SCOPE_URL = self.registration
-	? new URL(self.registration.scope)
-	: new URL("./", self.location);
-const ASSET_URLS = ASSETS.map((p) => new URL(p, SCOPE_URL).toString());
 
 self.addEventListener("install", (event) => {
 	event.waitUntil(
-		caches
-			.open(CACHE)
-			.then((cache) => cache.addAll(ASSET_URLS))
-			.then(() => self.skipWaiting())
+		caches.open(CACHE).then((cache) => cache.addAll(CORE_ASSETS))
 	);
+	self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
 	event.waitUntil(
-		caches
-			.keys()
-			.then((keys) =>
-				Promise.all(
-					keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))
-				)
-			)
-			.then(() => self.clients.claim())
+		(async () => {
+			const keys = await caches.keys();
+			await Promise.all(
+				keys.map((k) => (k === CACHE ? null : caches.delete(k)))
+			);
+			await self.clients.claim();
+		})()
 	);
 });
 
-// Navigation: network first → cache fallback (offline SPA)
 self.addEventListener("fetch", (event) => {
 	const req = event.request;
+	const url = new URL(req.url);
 	if (req.method !== "GET") return;
 
 	if (req.mode === "navigate") {
@@ -58,43 +50,35 @@ self.addEventListener("fetch", (event) => {
 					return await fetch(req);
 				} catch {
 					const cache = await caches.open(CACHE);
-					const cachedIndex = await cache.match(
-						ASSET_URLS.find((u) => u.endsWith("index.html"))
-					);
-					return cachedIndex || Response.error();
+					const offline = await cache.match("./index.html");
+					return offline || Response.error();
 				}
 			})()
 		);
 		return;
 	}
 
-	// Other GETs: cache-first, then network; runtime cache same-origin
-	event.respondWith(
-		(async () => {
-			const cached = await caches.match(req, { ignoreSearch: true });
-			if (cached) return cached;
-			const resp = await fetch(req);
-			try {
-				if (req.url.startsWith(self.location.origin) && resp && resp.ok) {
-					const clone = resp.clone();
-					const cache = await caches.open(CACHE);
-					cache.put(req, clone);
+	if (url.origin === self.location.origin) {
+		event.respondWith(
+			(async () => {
+				const cache = await caches.open(CACHE);
+				const cached = await cache.match(req);
+				if (cached) {
+					fetch(req)
+						.then((res) => {
+							if (res && res.ok) cache.put(req, res.clone());
+						})
+						.catch(() => {});
+					return cached;
 				}
-			} catch {}
-			return resp;
-		})()
-	);
+				const res = await fetch(req);
+				if (res && res.ok) cache.put(req, res.clone());
+				return res;
+			})()
+		);
+	}
 });
 
-// sw.js — add/confirm this message handler
-self.addEventListener("message", (e) => {
-	const type = e.data && e.data.type;
-	if (type === "SKIP_WAITING") {
-		self.skipWaiting();
-	} else if (type === "GET_VERSION") {
-		// reply to the client with the current cache label
-		const port = e.ports && e.ports[0];
-		port &&
-			port.postMessage({ cache: CACHE, scope: self.registration?.scope || "" });
-	}
+self.addEventListener("message", (event) => {
+	if (event.data === "SKIP_WAITING") self.skipWaiting();
 });

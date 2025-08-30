@@ -1,898 +1,686 @@
 // assets/app.js
-// UI wiring + rendering. Assumes Dexie, Luxon, jsPDF vendor scripts are present.
-// NOTE: keep SW_REG_VERSION and EXPECTED_CACHE in sync with sw.js:CACHE.
+// UI wiring + storage + exports. OM Table 9-1 (always acclimatised).
 
 import {
-	addDuty,
-	getAllDuty,
-	removeDuty,
-	clearAll,
-	addSleep,
-	getAllSleep,
-	loadSettings,
-	saveSettings,
-} from "./db.js";
-
-import {
-	classifyDisruptive,
-	fdpLimitAccl,
-	fatigueScore,
-	minutesBetween,
-	minToHM,
-	earliestNextReport,
-	computeCumulativeAndDaysOff,
-	sleepMetricsForReport,
-	woclOverlapMinutes,
-	timeAwakeAroundDuty,
+	RULES,
+	normalizeDuty,
+	dt,
+	durMins,
+	toHM,
+	dutyLegality,
+	rollingStats,
+	badgesFromRolling,
+	quickStats,
+	flagsForDuty,
 } from "./calc.js";
 
-import { badge, chip, $, renderList } from "./ui.js";
+const { DateTime } = luxon;
 
-/* ---------------- Release identifiers ---------------- */
-const SW_REG_VERSION = "3.13"; // used for ./sw.js?v=...  (bump on deploy)
-const EXPECTED_CACHE = "safair-duty-v3.13"; // must equal CACHE in sw.js
-const APP_VERSION = "v3.13"; // footer fallback if SW not ready
+/* ---------------- Version ---------------- */
+const APP_VERSION = "v1.0.0";
 
-/* ---------------- Globals ---------------- */
-const { DateTime } = window.luxon || {};
-let deferredPrompt = null;
-let SETTINGS = null;
-let SELECTED_ID = null;
-const MAX_LIST = 20;
+/* ---------------- Dexie ---------------- */
+const db = new Dexie("safair-duty-db");
+db.version(2).stores({ duties: "++id, report, off, dutyType, location" });
 
-/* =======================================================
-   Theme
-======================================================= */
-function applyTheme(theme) {
-	const t = theme === "dark" ? "dark" : "light";
-	document.documentElement.setAttribute("data-theme", t);
-	const btn = document.getElementById("themeBtn");
-	if (btn) btn.setAttribute("aria-pressed", String(t === "dark"));
-	const toggle = document.getElementById("themeToggle");
-	if (toggle) toggle.checked = t === "dark";
+/* ---------------- State/els ---------------- */
+let selectedId = null;
+const el = (id) => document.getElementById(id);
+
+const themeBtn = el("themeBtn");
+const btnExport = el("btnExport");
+const btnImport = el("btnImport");
+const importFile = el("importFile");
+const btnPDF = el("btnPDF");
+const btnClear = el("btnClear");
+
+const legalityBadges = el("legalityBadges");
+const legalityNotes = el("legalityNotes");
+const quickStatsBox = el("quickStats");
+const historyDiv = el("history");
+const flagsFeed = el("flagsFeed");
+const versionStamp = el("versionStamp");
+
+const form = el("dutyForm");
+const btnDeleteDuty = el("btnDeleteDuty");
+const dutyTypeSel = el("dutyType");
+const sbSection = el("sbSection");
+const sbCalled = el("sbCalled");
+
+/* ---------------- Theme ---------------- */
+function isDark() {
+	return (localStorage.getItem("theme") || "light") === "dark";
 }
-async function initTheme() {
-	const s = await loadSettings();
-	applyTheme(s.theme || "light");
-	document.getElementById("themeBtn")?.addEventListener("click", async () => {
-		const isDark =
-			document.documentElement.getAttribute("data-theme") === "dark";
-		const next = isDark ? "light" : "dark";
-		SETTINGS = await saveSettings({ theme: next });
-		applyTheme(next);
-	});
-	document
-		.getElementById("themeToggle")
-		?.addEventListener("change", async (e) => {
-			const next = e.target.checked ? "dark" : "light";
-			SETTINGS = await saveSettings({ theme: next });
-			applyTheme(next);
+function setTheme(dark) {
+	document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+	localStorage.setItem("theme", dark ? "dark" : "light");
+	themeBtn.textContent = dark ? "Light" : "Dark";
+	themeBtn.setAttribute("aria-pressed", String(dark));
+}
+setTheme(isDark());
+themeBtn?.addEventListener("click", () => setTheme(!isDark()));
+
+/* ---------------- Tiny toast helper ---------------- */
+function toast(message, type = "info", timeoutMs = 2200) {
+	let holder = document.getElementById("toasts");
+	if (!holder) {
+		holder = document.createElement("div");
+		holder.id = "toasts";
+		holder.setAttribute("aria-live", "polite");
+		Object.assign(holder.style, {
+			position: "fixed",
+			right: "14px",
+			bottom: "14px",
+			zIndex: 9999,
+			display: "grid",
+			gap: "8px",
+			maxWidth: "80vw",
 		});
+		document.body.appendChild(holder);
+	}
+	const el = document.createElement("div");
+	el.textContent = message;
+	const bg =
+		type === "bad"
+			? "#c62828"
+			: type === "warn"
+			? "#b26a00"
+			: type === "success"
+			? "#1e8e3e"
+			: "#2458e6";
+	Object.assign(el.style, {
+		padding: "10px 12px",
+		borderRadius: "10px",
+		color: "#fff",
+		font: "14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif",
+		boxShadow: "0 6px 20px rgba(0,0,0,.15)",
+		background: bg,
+	});
+	holder.appendChild(el);
+	setTimeout(() => {
+		el.style.opacity = "0";
+		el.style.transform = "translateY(6px)";
+		el.style.transition = "all .2s ease";
+		setTimeout(() => el.remove(), 220);
+	}, timeoutMs);
 }
 
-/* =======================================================
-   Install prompt
-======================================================= */
-window.addEventListener("beforeinstallprompt", (e) => {
-	e.preventDefault();
-	deferredPrompt = e;
-	const btn = $("#btnInstall");
-	if (btn) btn.disabled = false;
-});
-$("#btnInstall")?.addEventListener("click", async () => {
-	if (!deferredPrompt) return;
-	deferredPrompt.prompt();
-	deferredPrompt = null;
-	$("#btnInstall").disabled = true;
-});
-
-/* =======================================================
-   SW updates / banner
-======================================================= */
-function showUpdateBar(show = true) {
-	const bar = document.getElementById("updateBar");
-	if (!bar) return;
-	bar.style.display = show ? "flex" : "none";
-}
-function askSwVersion() {
-	return new Promise(async (resolve) => {
-		try {
-			const reg = await navigator.serviceWorker.getRegistration();
-			if (!reg?.active) return resolve(null);
-			const ch = new MessageChannel();
-			ch.port1.onmessage = (ev) => resolve(ev.data || null);
-			reg.active.postMessage({ type: "GET_VERSION" }, [ch.port2]);
-		} catch {
-			resolve(null);
-		}
+/* ---------------- Helpers ---------------- */
+function formToDuty() {
+	const f = new FormData(form);
+	const o = Object.fromEntries(f.entries());
+	o.sbCalled = sbCalled.checked;
+	return normalizeDuty({
+		id: selectedId,
+		report: o.report,
+		off: o.off,
+		dutyType: o.dutyType,
+		sectors: Number(o.sectors || 0),
+		location: o.location,
+		discretionMins: Number(o.discretionMins || 0),
+		discretionReason: o.discretionReason,
+		discretionBy: o.discretionBy,
+		notes: o.notes,
+		sbType: o.sbType,
+		sbStart: o.sbStart || null,
+		sbEnd: o.sbEnd || null,
+		sbCalled: o.sbCalled,
+		sbCall: o.sbCall || null,
 	});
 }
-async function refreshSwBanner() {
-	const hasCtrl = !!navigator.serviceWorker?.controller;
-	const meta = await askSwVersion(); // {cache, scope} or null
-	const upToDate = !!meta?.cache && meta.cache === EXPECTED_CACHE;
-	showUpdateBar(hasCtrl && !upToDate);
-}
-async function setupSwUpdates() {
-	if (!("serviceWorker" in navigator)) return;
-	const reg = await navigator.serviceWorker.register(
-		"./sw.js?v=" + SW_REG_VERSION
-	);
-
-	// If an update is already waiting and we have a controller, show banner.
-	if (reg.waiting && navigator.serviceWorker.controller) showUpdateBar(true);
-
-	// Show when a new worker is installed (not first install).
-	reg.addEventListener("updatefound", () => {
-		const sw = reg.installing;
-		if (!sw) return;
-		sw.addEventListener("statechange", () => {
-			if (sw.state === "installed" && navigator.serviceWorker.controller) {
-				showUpdateBar(true);
-			}
-		});
-	});
-
-	// Wire the button. Robust for Safari/iPadOS.
-	document
-		.getElementById("btnUpdateNow")
-		?.addEventListener("click", async () => {
-			const btn = document.getElementById("btnUpdateNow");
-			if (btn) {
-				btn.disabled = true;
-				btn.textContent = "Updating…";
-			}
-
-			try {
-				const r = await navigator.serviceWorker.getRegistration();
-				if (r?.waiting) {
-					r.waiting.postMessage({ type: "SKIP_WAITING" });
-				} else if (r?.installing) {
-					r.installing.addEventListener("statechange", () => {
-						if (r.installing?.state === "installed") {
-							r.waiting?.postMessage({ type: "SKIP_WAITING" });
-						}
-					});
-				} else {
-					await r?.update?.();
-					setTimeout(() => window.location.reload(), 500);
-				}
-			} catch {
-				window.location.reload();
-			}
-
-			// If Safari never fires controllerchange, force a reload anyway.
-			let forced = false;
-			navigator.serviceWorker.addEventListener("controllerchange", () => {
-				if (!forced) {
-					forced = true;
-					window.location.reload();
-				}
-			});
-			setTimeout(() => {
-				if (!forced) window.location.reload();
-			}, 1500);
-		});
-
-	reg.update?.();
-}
-
-/* =======================================================
-   Version stamp (footer)
-======================================================= */
-async function setVersionStamp() {
-	const el = document.getElementById("versionStamp");
-	if (!el) return;
-	let label = APP_VERSION;
-	const meta = await askSwVersion();
-	if (meta?.cache) label = meta.cache;
-	const today = new Date().toISOString().slice(0, 10);
-	el.textContent = `${label} (${today})`;
-}
-
-/* =======================================================
-   Settings form
-======================================================= */
-$("#settingsForm")?.addEventListener("submit", async (e) => {
-	e.preventDefault();
-	const [g, c, elev] = $("#setBands")
-		.value.split(",")
-		.map((n) => parseInt(n.trim(), 10))
-		.map((n) => (isNaN(n) ? undefined : n));
-	const chrono = $("#setChrono").value;
-	SETTINGS = await saveSettings({
-		chronotype: chrono,
-		bands: {
-			good: g ?? SETTINGS.bands.good,
-			caution: c ?? SETTINGS.bands.caution,
-			elevated: elev ?? SETTINGS.bands.elevated,
-		},
-	});
-	refresh();
-});
-
-/* =======================================================
-   Duty form
-======================================================= */
-$("#dutyForm")?.addEventListener("submit", async (e) => {
-	e.preventDefault();
-	const form = e.target;
-	const d = {
-		duty_type: form.dutyType.value || "FDP",
-		report: form.report.value,
-		off: form.off.value,
-		sectors: parseInt(form.sectors.value || "0", 10),
-		location: form.location.value || "Home",
-		sps: form.sps.value ? parseInt(form.sps.value, 10) : null,
-	};
-	if (form.date && form.date.value) d.date = form.date.value; // optional
-	await addDuty(d);
-	await refresh();
+function dutyToForm(d) {
+	const n = normalizeDuty(d);
 	form.reset();
-	$("#dutyType").value = "FDP";
-	$("#sectors").value = 2;
-	$("#location").value = "Home";
-	$("#sps").value = 3;
-});
+	el("report").value = n.report
+		? DateTime.fromISO(n.report).toFormat("yyyy-LL-dd'T'HH:mm")
+		: "";
+	el("off").value = n.off
+		? DateTime.fromISO(n.off).toFormat("yyyy-LL-dd'T'HH:mm")
+		: "";
+	dutyTypeSel.value = n.dutyType || "FDP";
+	el("sectors").value = Number(n.sectors || 0);
+	el("location").value = n.location || "Home";
+	el("discretionMins").value = Number(n.discretionMins || 0);
+	el("discretionReason").value = n.discretionReason || "";
+	el("discretionBy").value = n.discretionBy || "";
+	el("notes").value = n.notes || "";
+	el("sbType").value = n.sbType || "Home";
+	el("sbStart").value = n.sbStart
+		? DateTime.fromISO(n.sbStart).toFormat("yyyy-LL-dd'T'HH:mm")
+		: "";
+	el("sbEnd").value = n.sbEnd
+		? DateTime.fromISO(n.sbEnd).toFormat("yyyy-LL-dd'T'HH:mm")
+		: "";
+	sbCalled.checked = !!n.sbCalled;
+	el("sbCall").value = n.sbCall
+		? DateTime.fromISO(n.sbCall).toFormat("yyyy-LL-dd'T'HH:mm")
+		: "";
+	updateStandbyVisibility();
+}
+function updateStandbyVisibility() {
+	const isStandby = (dutyTypeSel.value || "").toLowerCase() === "standby";
+	sbSection.style.display = isStandby ? "block" : "none";
+}
+function safeMillis(v) {
+	const D = dt(v);
+	return D?.isValid ? D.toMillis() : 0;
+}
 
-/* =======================================================
-   Sleep form
-======================================================= */
-$("#sleepForm")?.addEventListener("submit", async (e) => {
-	e.preventDefault();
-	const s = {
-		start: $("#sleepStart").value,
-		end: $("#sleepEnd").value,
-		type: $("#sleepType").value || "main",
-		quality: parseInt($("#sleepQuality").value || "3", 10),
-	};
-	await addSleep(s);
-	await refresh();
-	e.target.reset();
-});
-
-/* =======================================================
-   Clear / Export / Import / PDF / Delete
-======================================================= */
-$("#btnClear")?.addEventListener("click", async () => {
-	if (!confirm("Delete all locally stored data (duties, sleep, settings)?"))
-		return;
-	await clearAll();
-	SELECTED_ID = null;
-	await refresh();
-});
-
-$("#btnExport")?.addEventListener("click", async () => {
-	const payload = {
-		exportedAt: new Date().toISOString(),
-		settings: await loadSettings(),
-		duty: await getAllDuty(),
-		sleep: await getAllSleep(),
-	};
-	const blob = new Blob([JSON.stringify(payload, null, 2)], {
-		type: "application/json",
-	});
-	const url = URL.createObjectURL(blob);
-	const a = document.createElement("a");
-	document.body.appendChild(a);
-	a.style.display = "none";
-	a.href = url;
-	a.download = `safair-duty-export-${new Date()
-		.toISOString()
-		.slice(0, 10)}.json`;
-	a.click();
-	URL.revokeObjectURL(url);
-});
-
-$("#btnImport")?.addEventListener("click", () => $("#importFile").click());
-$("#importFile")?.addEventListener("change", async (e) => {
-	const f = e.target.files?.[0];
-	if (!f) return;
-	const data = JSON.parse(await f.text());
-	const modeReplace = confirm(
-		"Import will REPLACE current data. OK to continue?"
+/* ---------------- CRUD ---------------- */
+async function getAllDutiesSorted() {
+	const all = await db.duties.toArray();
+	all.sort(
+		(a, b) =>
+			safeMillis(b.report || b.sbStart) - safeMillis(a.report || a.sbStart)
 	);
-	if (!modeReplace) return;
-	await clearAll();
-	if (data.settings) await saveSettings(data.settings);
-	if (Array.isArray(data.duty)) for (const d of data.duty) await addDuty(d);
-	if (Array.isArray(data.sleep)) for (const s of data.sleep) await addSleep(s);
-	e.target.value = "";
-	await refresh();
-	alert("Import complete.");
-});
+	return all;
+}
+async function saveDuty() {
+	const d = formToDuty();
+	const isStandby = (d.dutyType || "").toLowerCase() === "standby";
 
-$("#btnDeleteDuty")?.addEventListener("click", async () => {
-	const all = await getAllDuty();
-	const sel = getSelected(all);
-	if (!sel) return alert("No entry selected.");
-	if (!confirm(`Delete duty on ${sel.date}?`)) return;
-	await removeDuty(sel.id);
-	SELECTED_ID = null;
-	await refresh();
-});
-
-$("#btnPDF")?.addEventListener("click", async () => {
-	const all = await getAllDuty();
-	if (!all.length) return alert("No entries to include.");
-	const selected = getSelected(all);
-	await generatePDF(selected, all);
-});
-
-/* =======================================================
-   History selection (delegation) + keyboard
-======================================================= */
-$("#history")?.addEventListener("click", (e) => {
-	const li = e.target.closest("li[data-id]");
-	if (!li) return;
-	const id = li.dataset.id;
-	if (!id) return;
-	SELECTED_ID = String(id);
-	refresh();
-});
-
-document.addEventListener("keydown", async (e) => {
-	if (!["ArrowUp", "ArrowDown", "Delete"].includes(e.key)) return;
-	const all = await getAllDuty();
-	if (!all.length) return;
-	let idx = Math.max(
-		0,
-		all.findIndex((d) => String(d.id) === String(SELECTED_ID))
-	);
-	if (e.key === "ArrowUp") idx = Math.min(idx + 1, all.length - 1); // list is newest→oldest
-	if (e.key === "ArrowDown") idx = Math.max(idx - 1, 0);
-	if (e.key === "Delete") {
-		const sel = all[idx];
-		if (sel && confirm(`Delete duty on ${sel.date}?`)) {
-			await removeDuty(sel.id);
-			SELECTED_ID = null;
-			return refresh();
+	if (isStandby && !d.sbCalled) {
+		if (!d.sbStart || !d.sbEnd) {
+			alert("Please enter Standby Window Start and End.");
+			return;
 		}
+	} else {
+		if (!d.report || !d.off) {
+			alert("Please enter both Sign On and Sign Off.");
+			return;
+		}
+		if (dt(d.off) <= dt(d.report)) {
+			alert("Sign off must be after sign on.");
+			return;
+		}
+	}
+
+	if (d.id) await db.duties.update(d.id, d);
+	else d.id = await db.duties.add(d);
+
+	selectedId = d.id;
+	await renderAll();
+	toast("Duty saved", "success");
+}
+async function deleteSelected() {
+	if (!selectedId) return;
+	if (!confirm("Delete selected duty?")) return;
+	await db.duties.delete(selectedId);
+	selectedId = null;
+	form.reset();
+	await renderAll();
+	toast("Duty deleted", "warn");
+}
+async function clearAll() {
+	if (!confirm("This will clear all local data. Continue?")) return;
+	await db.duties.clear();
+	selectedId = null;
+	form.reset();
+	await renderAll();
+	toast("All data cleared", "bad");
+}
+
+/* ---------------- Render ---------------- */
+function renderBadges(container, badges) {
+	container.innerHTML = "";
+	for (const b of badges) {
+		const span = document.createElement("span");
+		span.className = `badge ${b.status}`;
+		span.textContent = b.text;
+		container.appendChild(span);
+	}
+}
+function renderFlags(listEl, flags) {
+	listEl.innerHTML = "";
+	if (!flags.length) {
+		const li = document.createElement("li");
+		li.textContent = "No flagged items.";
+		listEl.appendChild(li);
 		return;
 	}
-	SELECTED_ID = String(all[idx].id);
-	refresh();
-});
-
-/* =======================================================
-   Boot / Refresh
-======================================================= */
-async function boot() {
-	SETTINGS = await loadSettings();
-	if ($("#setChrono")) $("#setChrono").value = SETTINGS.chronotype;
-	if ($("#setBands"))
-		$(
-			"#setBands"
-		).value = `${SETTINGS.bands.good},${SETTINGS.bands.caution},${SETTINGS.bands.elevated}`;
-
-	await setupSwUpdates();
-	await setVersionStamp();
-	await refreshSwBanner(); // in case everything already matches
-	await initTheme();
-
-	// iOS-only date/time mask overlay (keeps fields readable)
-	enhanceDatetime("report");
-	enhanceDatetime("off");
-	enhanceDatetime("sleepStart");
-	enhanceDatetime("sleepEnd");
-
-	await refresh();
-}
-
-function getSelected(allDuty) {
-	if (!allDuty.length) return null;
-	if (SELECTED_ID == null) SELECTED_ID = String(allDuty[0].id);
-	let sel = allDuty.find((d) => String(d.id) === String(SELECTED_ID));
-	if (!sel) {
-		SELECTED_ID = String(allDuty[0].id);
-		sel = allDuty[0];
-	}
-	return sel;
-}
-
-async function refresh() {
-	const allDuty = await getAllDuty();
-	const allSleep = await getAllSleep();
-
-	renderHistory(allDuty);
-
-	const selected = getSelected(allDuty);
-	if (selected) {
-		renderLegality(selected, allDuty);
-		renderFatigue(selected, allSleep);
-	} else {
-		$("#legalityBadges") && ($("#legalityBadges").innerHTML = "");
-		$("#fatigueGauge") && ($("#fatigueGauge").textContent = "—");
-		$("#fatigueChips") && ($("#fatigueChips").innerHTML = "");
-		$("#legalityNotes") && ($("#legalityNotes").innerHTML = "");
+	for (const f of flags) {
+		const li = document.createElement("li");
+		li.innerHTML = `<strong>${f.level.toUpperCase()}:</strong> ${f.text}`;
+		listEl.appendChild(li);
 	}
 }
+function renderQuickStats(boxEl, stats) {
+	const { averages, counts, standby } = stats;
+	boxEl.innerHTML = "";
+	const make = (t) => {
+		const s = document.createElement("span");
+		s.className = "badge";
+		s.textContent = t;
+		return s;
+	};
 
-/* =======================================================
-   Advisory SP mapping + policy flags
-======================================================= */
-function scoreToSP(score) {
-	const s = Math.max(0, Math.min(100, score));
-	if (s >= 90) return 2.0;
-	if (s >= 80) return 2.5;
-	if (s >= 70) return 3.2;
-	if (s >= 60) return 3.8;
-	if (s >= 50) return 4.6;
-	if (s >= 40) return 5.4;
-	if (s >= 30) return 6.0;
-	return 6.5;
-}
-function spsPolicyFlags({ spsAtSignOn, predictedSP }) {
-	const flags = [];
-	if (typeof spsAtSignOn === "number" && spsAtSignOn >= 6) {
-		flags.push({
-			level: "bad",
-			text: "SPS 6–7 at sign-on: off-load per OM/FRMP.",
-		});
-	}
-	if (typeof predictedSP === "number" && predictedSP > 4.75) {
-		flags.push({
-			level: "warn",
-			text: "Predicted SP > 4.75 (advisory) – reduce risk per FRMS.",
-		});
-	}
-	return flags;
-}
-
-/* =======================================================
-   Legality
-======================================================= */
-function renderLegality(d, all) {
-	const badges = [];
-
-	const limit = fdpLimitAccl(d.report, d.sectors || 1);
-	const actual = minutesBetween(d.report, d.off);
-	const remaining = Math.max(0, limit - actual);
-	const over = Math.max(0, actual - limit);
-	const time = (m) => minToHM(m);
-
-	badges.push(
-		badge(
-			`FDP: ${time(actual)} / ${time(limit)} ${
-				over > 0 ? `(OVER by ${time(over)})` : `(Left ${time(remaining)})`
-			}`,
-			over > 0 ? "bad" : "ok"
+	boxEl.appendChild(
+		make(
+			`Avg duty length: ${
+				averages.avgDutyLen ? toHM(averages.avgDutyLen) : "—"
+			}`
 		)
 	);
-
-	const flags = classifyDisruptive(d.report, d.off);
-	if (flags.length) badges.push(badge(flags.join(" · "), "warn"));
-
-	const cum = computeCumulativeAndDaysOff(all, d.off);
-
-	let tone7 = "ok";
-	if (cum.hours7 > 60) tone7 = "bad";
-	else if (cum.hours7 > 50) tone7 = "warn";
-	badges.push(badge(`Duty last 7d: ${cum.hours7} h`, tone7));
-
-	badges.push(
-		badge(`Duty last 28d: ${cum.hours28} h`, cum.hours28 <= 200 ? "ok" : "warn")
-	);
-
-	const toneAvg = cum.avgWeekly28 <= 50 ? "ok" : "bad";
-	badges.push(
-		badge(`Avg weekly duty (28d): ${cum.avgWeekly28} h (≤50)`, toneAvg)
-	);
-
-	let toneConsec = "ok";
-	if (cum.consecWork > 7) toneConsec = "bad";
-	else if (cum.consecWork >= 5) toneConsec = "warn";
-	badges.push(badge(`Consec work days: ${cum.consecWork}`, toneConsec));
-
-	badges.push(
-		badge(
-			`2 off in last 14: ${cum.hasTwoIn14 ? "Yes" : "No"}`,
-			cum.hasTwoIn14 ? "ok" : "warn"
+	boxEl.appendChild(
+		make(
+			`Avg sectors/duty: ${
+				averages.avgSectors ? averages.avgSectors.toFixed(2) : "—"
+			}`
 		)
 	);
-	badges.push(
-		badge(
-			`Days off in last 28: ${cum.offIn28} (≥6)`,
-			cum.offIn28 >= 6 ? "ok" : "warn"
+	boxEl.appendChild(
+		make(
+			`Earliest report: ${
+				averages.earliestReportISO
+					? DateTime.fromISO(averages.earliestReportISO).toFormat(
+							"HH:mm, d LLL"
+					  )
+					: "—"
+			}`
 		)
 	);
-	badges.push(
-		badge(
-			`Avg off/28d over 84d: ${cum.avgOffPer28} (≥8)`,
-			cum.avgOffPer28 >= 8 ? "ok" : "warn"
+	boxEl.appendChild(
+		make(
+			`Latest report: ${
+				averages.latestReportISO
+					? DateTime.fromISO(averages.latestReportISO).toFormat("HH:mm, d LLL")
+					: "—"
+			}`
 		)
 	);
-
-	renderList($("#legalityBadges"), badges);
-
-	const p = document.createElement("div");
-	p.innerHTML = `<div class="small muted">
-    These values are advisory and simplified (acclimatised). For edge cases, unusual pairings,
-    or split duty specifics, always refer to OM / SA-CATS and company FRMS.
-  </div>`;
-	$("#legalityNotes").innerHTML = "";
-	$("#legalityNotes").appendChild(p);
-}
-
-/* =======================================================
-   Fatigue
-======================================================= */
-function toneFromScore(score, bands) {
-	if (score < bands.elevated) return { tone: "bad", label: "High" };
-	if (score < bands.caution) return { tone: "warn", label: "Elevated" };
-	if (score < bands.good) return { tone: "warn", label: "Caution" };
-	return { tone: "ok", label: "Good" };
-}
-function renderFatigue(d, allSleep) {
-	const sleep = sleepMetricsForReport(allSleep, d.report);
-	const woclMins = woclOverlapMinutes(d.report, d.off, SETTINGS.chronotype);
-	const sps = d.sps ?? null;
-
-	const awake = timeAwakeAroundDuty(
-		allSleep,
-		d.report,
-		d.off,
-		SETTINGS.chronotype
-	);
-	const score = fatigueScore({
-		priorSleep24: sleep.priorSleep24,
-		priorSleep48: sleep.priorSleep48,
-		timeAwakePeakHrs: awake.untilNextSleep,
-		timeAwakeHrs: awake.sinceWakeAtReport,
-		woclOverlapMins: woclMins,
-		sps,
-	});
-
-	const gauge = $("#fatigueGauge");
-	const band = toneFromScore(score, SETTINGS.bands);
-	gauge.textContent = Math.round(score);
-	gauge.classList.remove("t-ok", "t-warn", "t-bad");
-	gauge.classList.add(
-		band.tone === "ok" ? "t-ok" : band.tone === "warn" ? "t-warn" : "t-bad"
+	boxEl.appendChild(
+		make(`Common report window: ${averages.commonReportWindow || "—"}`)
 	);
 
-	const chips = [];
-	chips.push(
-		chip(
-			`Sleep 24h: ${sleep.priorSleep24}h`,
-			sleep.priorSleep24 < 4
-				? "bad"
-				: sleep.priorSleep24 < 6
-				? "warn"
-				: undefined
-		)
+	boxEl.appendChild(
+		make(`Disruptive starts (this month): ${counts.disruptiveThisMonth}`)
 	);
-	chips.push(chip(`Since wake @ report: ${awake.sinceWakeAtReport}h`));
-	chips.push(chip(`Since wake @ off: ${awake.sinceWakeAtOff}h`));
-	chips.push(
-		chip(
-			`Until next sleep: ${awake.untilNextSleep}h${
-				awake.usedEstimate ? " (est.)" : ""
-			}`,
-			awake.untilNextSleep > 18
-				? "bad"
-				: awake.untilNextSleep > 16
-				? "warn"
-				: undefined
-		)
+	boxEl.appendChild(make(`Duties with discretion: ${counts.withDiscretion}`));
+	boxEl.appendChild(
+		make(`Airport standby calls: ${counts.airportStandbyCalls}`)
 	);
-	if (woclMins > 0)
-		chips.push(
-			chip(
-				`WOCL: ${woclMins}m${
-					SETTINGS.chronotype !== "neutral" ? ` (${SETTINGS.chronotype})` : ""
-				}`,
-				"warn"
+	boxEl.appendChild(
+		make(`Away-nights (this month): ${counts.awayNightsThisMonth}`)
+	);
+
+	if (standby) {
+		boxEl.appendChild(make(`Standby used: ${standby.usedPct}%`));
+		boxEl.appendChild(
+			make(
+				`Avg callout notice: ${
+					standby.avgCallNoticeMins ? toHM(standby.avgCallNoticeMins) : "—"
+				}`
 			)
 		);
-	if (sps != null) {
-		const spsTone = sps >= 6 ? "bad" : sps >= 5 ? "warn" : undefined;
-		chips.push(chip(`SPS ${sps}`, spsTone));
 	}
-	const spPred = scoreToSP(score);
-	chips.push(
-		chip(
-			`Predicted SP ~ ${spPred.toFixed(2)} (advisory)`,
-			spPred > 4.75 ? "warn" : undefined
-		)
-	);
-	const flags = spsPolicyFlags({ spsAtSignOn: sps, predictedSP: spPred });
-	for (const f of flags) chips.push(chip(f.text, f.level));
-	chips.push(chip(band.label, band.tone));
-
-	renderList($("#fatigueChips"), chips);
 }
-
-/* =======================================================
-   PDF
-======================================================= */
-async function generatePDF(latest, all) {
-	const sleepAll = await getAllSleep();
-	const { jsPDF } = window.jspdf;
-	const doc = new jsPDF({ unit: "pt", format: "a4" });
-	const pad = 40;
-	let y = pad;
-
-	const cum = computeCumulativeAndDaysOff(all, latest.off);
-	const sleep = sleepMetricsForReport(sleepAll, latest.report);
-	const woclMins = woclOverlapMinutes(
-		latest.report,
-		latest.off,
-		SETTINGS.chronotype
-	);
-	const awake = timeAwakeAroundDuty(
-		sleepAll,
-		latest.report,
-		latest.off,
-		SETTINGS.chronotype
-	);
-	const sps = latest.sps || null;
-
-	const meta = await askSwVersion();
-	const versionLabel = meta?.cache || APP_VERSION;
-
-	doc.setFont("helvetica", "bold");
-	doc.setFontSize(18);
-	doc.text("Safair Duty & Fatigue Summary", pad, y);
-	y += 26;
-
-	doc.setFontSize(12);
-	doc.setFont("helvetica", "");
-	doc.text(`Version: ${versionLabel}`, pad, y);
-	y += 14;
-	doc.text(`Date: ${latest.date}`, pad, y);
-	y += 14;
-	doc.text(
-		`Duty: ${latest.duty_type} • Sectors: ${latest.sectors || 0} • ${
-			latest.report
-		} → ${latest.off}`,
-		pad,
-		y
-	);
-	y += 14;
-	doc.text(`Location: ${latest.location || "Home"}`, pad, y);
-	y += 18;
-
-	doc.setFont("helvetica", "bold");
-	doc.text("Legality", pad, y);
-	y += 14;
-	const limit = fdpLimitAccl(latest.report, latest.sectors || 1);
-	const actual = minutesBetween(latest.report, latest.off);
-	const remain = Math.max(0, limit - actual);
-	const over = Math.max(0, actual - limit);
-	doc.setFont("helvetica", "");
-	doc.text(
-		`FDP actual: ${minToHM(actual)}  |  FDP limit: ${minToHM(limit)}`,
-		pad,
-		y
-	);
-	y += 14;
-	if (over > 0) {
-		doc.setTextColor(180, 30, 30);
-		doc.text(`OVER by ${minToHM(over)}`, pad, y);
-		doc.setTextColor(0);
-	} else {
-		doc.text(`Remaining: ${minToHM(remain)}`, pad, y);
-	}
-	y += 18;
-
-	const flags = classifyDisruptive(latest.report, latest.off);
-	if (flags.length) {
-		doc.text(`Disruptive: ${flags.join(", ")}`, pad, y);
-		y += 18;
-	}
-
-	doc.setFont("helvetica", "bold");
-	doc.text("Cumulative", pad, y);
-	y += 14;
-	doc.setFont("helvetica", "");
-	doc.text(`Last 7 days duty: ${cum.hours7} h`, pad, y);
-	y += 14;
-	doc.text(`Last 28 days total: ${cum.hours28} h`, pad, y);
-	y += 14;
-	doc.text(
-		`Avg weekly over last 28 days: ${cum.avgWeekly28} h (limit 50)`,
-		pad,
-		y
-	);
-	y += 18;
-
-	doc.setFont("helvetica", "bold");
-	doc.text("Days Off", pad, y);
-	y += 14;
-	doc.setFont("helvetica", "");
-	doc.text(`Consecutive work days (ending today): ${cum.consecWork}`, pad, y);
-	y += 14;
-	doc.text(`Days off in last 28 days: ${cum.offIn28} (≥6)`, pad, y);
-	y += 14;
-	doc.text(
-		`Two consecutive days off in last 14 days: ${
-			cum.hasTwoIn14 ? "Yes" : "No"
-		}`,
-		pad,
-		y
-	);
-	y += 14;
-	doc.text(`Avg days off / 28d over 84d: ${cum.avgOffPer28} (≥8)`, pad, y);
-	y += 22;
-
-	doc.setFont("helvetica", "bold");
-	doc.text("Fatigue (Advisory)", pad, y);
-	y += 14;
-	doc.setFont("helvetica", "");
-	doc.text(`Chronotype: ${SETTINGS.chronotype}`, pad, y);
-	y += 14;
-	doc.text(`SPS: ${sps ?? "n/a"}`, pad, y);
-	y += 14;
-	doc.text(
-		`Sleep last 24h: ${sleep.priorSleep24} h | Sleep last 48h: ${sleep.priorSleep48} h`,
-		pad,
-		y
-	);
-	y += 14;
-	doc.text(
-		`Since wake @ report: ${awake.sinceWakeAtReport} h | @ off: ${awake.sinceWakeAtOff} h | Until next sleep: ${awake.untilNextSleep} h`,
-		pad,
-		y
-	);
-	y += 14;
-	doc.text(`WOCL overlap: ${woclMins} min`, pad, y);
-	y += 18;
-
-	const score = fatigueScore({
-		priorSleep24: sleep.priorSleep24,
-		priorSleep48: sleep.priorSleep48,
-		timeAwakePeakHrs: awake.untilNextSleep,
-		timeAwakeHrs: awake.sinceWakeAtReport,
-		woclOverlapMins: woclMins,
-		sps,
-	});
-	const spPred = scoreToSP(score);
-	doc.setFont("helvetica", "bold");
-	doc.text(`Fatigue score: ${Math.round(score)} / 100`, pad, y);
-	y += 14;
-	doc.setFont("helvetica", "");
-	doc.text(`Predicted SP (advisory): ~${spPred.toFixed(2)}`, pad, y);
-	y += 18;
-
-	const policy = spsPolicyFlags({ spsAtSignOn: sps, predictedSP: spPred });
-	if (policy.length) {
-		for (const f of policy) {
-			if (f.level === "bad") doc.setTextColor(180, 30, 30);
-			else if (f.level === "warn") doc.setTextColor(176, 128, 0);
-			doc.text(`• ${f.text}`, pad, y);
-			y += 14;
-			doc.setTextColor(0);
-		}
-		y += 6;
-	}
-
-	const next = earliestNextReport(latest.off, latest.location);
-	doc.setFont("helvetica", "bold");
-	doc.text("Earliest Next Report", pad, y);
-	y += 14;
-	doc.setFont("helvetica", "");
-	doc.text(`${next.earliest.toISO({ suppressMilliseconds: true })}`, pad, y);
-	y += 14;
-	doc.text(`Basis: ${next.basis}`, pad, y);
-	y += 22;
-
-	doc.setFont("helvetica", "italic");
-	doc.setTextColor(120);
-	doc.text(
-		"Advisory only; supports judgement and company FRMS. Not a substitute for OM/FRMP.",
-		pad,
-		y
-	);
-
-	doc.save(`safair-duty-${latest.date}.pdf`);
-}
-
-/* =======================================================
-   History rendering
-======================================================= */
-function makeToggle(label) {
-	const btn = document.createElement("button");
-	btn.className = "btn ghost small";
-	btn.type = "button";
-	btn.textContent = label;
-	return btn;
-}
-function renderHistory(all) {
-	const wrap = $("#history");
-	if (!wrap) return;
-	wrap.innerHTML = "";
-	if (!all.length) {
-		wrap.textContent = "No entries yet.";
+function renderHistory(div, duties) {
+	div.innerHTML = "";
+	if (!duties.length) {
+		div.textContent = "No duties yet.";
 		return;
 	}
 
-	let expanded = wrap.dataset.expanded === "1";
-	const list = expanded ? all : all.slice(0, MAX_LIST);
-
-	const ul = document.createElement("ul");
-	ul.setAttribute("role", "listbox");
-	list.forEach((d) => {
-		const li = document.createElement("li");
-		li.dataset.id = d.id;
-		if (String(d.id) === String(SELECTED_ID)) li.classList.add("active");
-		li.textContent = `${d.date} • ${d.duty_type} • ${
-			d.sectors || 0
-		} sectors • ${d.report} → ${d.off}`;
-		li.setAttribute("role", "option");
-		ul.appendChild(li);
-	});
-	wrap.appendChild(ul);
-
-	if (all.length > MAX_LIST) {
-		const btn = makeToggle(
-			expanded ? "Show less" : `Show more (${all.length - MAX_LIST})`
+	const groups = new Map();
+	for (const d of duties) {
+		const key = dt(d.report || d.sbStart || Date.now()).toFormat("yyyy-LL");
+		(groups.get(key) || groups.set(key, []).get(key)).push(d);
+	}
+	for (const [ym, arr] of groups) {
+		const wrap = document.createElement("div");
+		const title = document.createElement("div");
+		title.className = "muted";
+		title.style.margin = "8px 0";
+		title.textContent = DateTime.fromFormat(ym, "yyyy-LL").toFormat(
+			"LLLL yyyy"
 		);
-		btn.addEventListener("click", () => {
-			wrap.dataset.expanded = expanded ? "0" : "1";
-			renderHistory(all);
-		});
-		wrap.appendChild(btn);
+		wrap.appendChild(title);
+
+		for (const d of arr) {
+			const R = d.report ? dt(d.report) : dt(d.sbStart);
+			const O = d.off ? dt(d.off) : dt(d.sbEnd);
+			const row = document.createElement("div");
+			row.tabIndex = 0;
+			row.className = "chip";
+			row.style.cursor = "pointer";
+			row.style.justifyContent = "space-between";
+			row.style.display = "flex";
+			row.style.gap = "10px";
+			if (selectedId === d.id) row.classList.add("ok");
+			const left = R?.isValid
+				? `${R.toFormat("dd LLL HH:mm")} → ${
+						O?.isValid ? O.toFormat("HH:mm") : "—"
+				  }`
+				: "—";
+			const durText =
+				d.report && d.off
+					? toHM(durMins(d.report, d.off))
+					: d.sbStart && d.sbEnd
+					? `SB ${toHM(durMins(d.sbStart, d.sbEnd))}`
+					: "—";
+			row.innerHTML = `
+        <span>${left}</span>
+        <span>${d.dutyType || "FDP"} · ${Number(
+				d.sectors || 0
+			)} legs · ${durText}</span>
+      `;
+			row.addEventListener("click", async () => {
+				selectedId = d.id;
+				dutyToForm(d);
+				await computeAndRender();
+				renderHistory(div, duties);
+			});
+			row.addEventListener("keydown", async (e) => {
+				if (e.key === "Enter" || e.key === " ") {
+					e.preventDefault();
+					row.click();
+				}
+			});
+			wrap.appendChild(row);
+		}
+		div.appendChild(wrap);
 	}
 }
 
-/* =======================================================
-   iOS-only datetime mask (keeps fields readable when blurred)
-======================================================= */
-function isIOS() {
-	return (
-		/iPad|iPhone|iPod/.test(navigator.userAgent) ||
-		(navigator.userAgent.includes("Mac") && navigator.maxTouchPoints > 1)
+async function computeAndRender() {
+	const duties = await getAllDutiesSorted();
+
+	let selected = selectedId ? duties.find((d) => d.id === selectedId) : null;
+	if (!selected && duties.length) {
+		selected = duties[0];
+		selectedId = selected.id;
+		dutyToForm(selected);
+	}
+
+	const prev = selected
+		? duties[duties.findIndex((d) => d.id === selected.id) + 1] || null
+		: null;
+
+	// Single-duty legality + notes
+	let combined = [];
+	if (selected) {
+		const { badges, notes } = dutyLegality(selected, prev);
+		combined.push(...badges);
+		if (notes.length) {
+			legalityNotes.style.display = "block";
+			legalityNotes.textContent = notes.join(" ");
+		} else {
+			legalityNotes.style.display = "none";
+			legalityNotes.textContent = "";
+		}
+	} else {
+		legalityNotes.style.display = "none";
+		legalityNotes.textContent = "";
+	}
+
+	// Rolling badges
+	const roll = rollingStats(duties, DateTime.local());
+	combined.push(...badgesFromRolling(roll));
+	renderBadges(legalityBadges, combined);
+
+	// Flags (last 28 days)
+	const cutoff = DateTime.local().minus({ days: 28 });
+	let agg = [];
+	for (let i = 0; i < duties.length; i++) {
+		const d = duties[i],
+			dPrev = duties[i + 1] || null,
+			when = dt(d.report || d.sbStart);
+		if (when && when < cutoff) break;
+		const fs = flagsForDuty(d, dPrev, roll);
+		agg.push(
+			...fs.map((f) => ({
+				level: f.level,
+				text: `${when?.toFormat("dd LLL") || "—"}: ${f.text}`,
+			}))
+		);
+	}
+	renderFlags(flagsFeed, agg.slice(0, 20));
+
+	// Quick stats, history, footer
+	renderQuickStats(quickStatsBox, quickStats(duties));
+	renderHistory(historyDiv, duties);
+	versionStamp.textContent = APP_VERSION;
+}
+
+/* -------- Wrapper (fix for "renderAll is not defined") -------- */
+async function renderAll() {
+	await computeAndRender();
+}
+
+/* ---------------- Export / Import ---------------- */
+function dutiesToJSON(duties) {
+	return JSON.stringify(duties, null, 2);
+}
+function dutiesFromJSON(text) {
+	const arr = JSON.parse(text);
+	if (!Array.isArray(arr)) throw new Error("Invalid JSON (expected an array).");
+	return arr.map(normalizeDuty);
+}
+function dutiesToCSV(duties) {
+	const heads = [
+		"report",
+		"off",
+		"dutyType",
+		"sectors",
+		"location",
+		"discretionMins",
+		"discretionReason",
+		"discretionBy",
+		"notes",
+		"sbType",
+		"sbStart",
+		"sbEnd",
+		"sbCalled",
+		"sbCall",
+	];
+	const esc = (v) =>
+		v === null || v === undefined
+			? ""
+			: /[",\n]/.test(String(v))
+			? `"${String(v).replace(/"/g, '""')}"`
+			: String(v);
+	const rows = [heads.join(",")];
+	for (const d of duties)
+		rows.push(heads.map((h) => esc(d[h] ?? "")).join(","));
+	return rows.join("\n");
+}
+async function exportJSON() {
+	const duties = await getAllDutiesSorted();
+	const blob = new Blob([dutiesToJSON(duties)], { type: "application/json" });
+	downloadBlob(
+		blob,
+		`duties-${DateTime.local().toFormat("yyyyLLdd-HHmm")}.json`
 	);
+	toast("Exported JSON", "info", 1600);
 }
-function formatDTLabel(iso) {
-	if (!iso || !DateTime) return "yyyy / mm / dd, --:--";
-	const dt = DateTime.fromISO(iso);
-	if (!dt.isValid) return "yyyy / mm / dd, --:--";
-	return dt.toFormat("dd LLL yyyy · HH:mm");
+async function exportCSV() {
+	const duties = await getAllDutiesSorted();
+	const blob = new Blob([dutiesToCSV(duties)], { type: "text/csv" });
+	downloadBlob(
+		blob,
+		`duties-${DateTime.local().toFormat("yyyyLLdd-HHmm")}.csv`
+	);
+	toast("Exported CSV", "info", 1600);
 }
-function enhanceDatetime(id) {
-	if (!isIOS()) return; // desktop keeps native look
-	const input = document.getElementById(id);
-	if (!input) return;
+function downloadBlob(blob, filename) {
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement("a");
+	a.href = url;
+	a.download = filename;
+	a.click();
+	URL.revokeObjectURL(url);
+}
 
-	// Wrap
-	const wrap = document.createElement("span");
-	wrap.className = "dt-overlay";
-	input.parentNode.insertBefore(wrap, input);
-	wrap.appendChild(input);
-
-	// Mask
-	const mask = document.createElement("span");
-	mask.className = "dt-mask";
-	mask.textContent = input.value
-		? formatDTLabel(input.value)
-		: "yyyy / mm / dd, --:--";
-	wrap.appendChild(mask);
-
-	// State
-	const update = () => {
-		const hasVal = !!input.value;
-		wrap.classList.toggle("has-value", hasVal);
-		mask.textContent = hasVal
-			? formatDTLabel(input.value)
-			: "yyyy / mm / dd, --:--";
+/* ---------------- PDF Export ---------------- */
+async function exportPDF() {
+	const duties = await getAllDutiesSorted();
+	const { jsPDF } = window.jspdf;
+	const doc = new jsPDF({ orientation: "p", unit: "pt", format: "a4" });
+	const margin = 36;
+	let y = margin;
+	const line = (text, size = 11, bold = false) => {
+		doc.setFont("helvetica", bold ? "bold" : "normal");
+		doc.setFontSize(size);
+		const lines = doc.splitTextToSize(text, 522);
+		for (const l of lines) {
+			if (y > 800) {
+				doc.addPage();
+				y = margin;
+			}
+			doc.text(l, margin, y);
+			y += size + 4;
+		}
 	};
-	const open = () => wrap.classList.add("open");
-	const close = () => {
-		wrap.classList.remove("open");
-		update();
-	};
 
-	input.addEventListener("focus", open);
-	input.addEventListener("blur", close);
-	input.addEventListener("change", update);
-	input.addEventListener("input", update);
+	line("Safair Duty Tracker — Duty Log & Legality (OM-aligned)", 14, true);
+	line(APP_VERSION, 10);
+	line(DateTime.local().toFormat("cccc, d LLLL yyyy HH:mm"), 10);
+	y += 4;
 
-	update();
+	const roll = rollingStats(duties, DateTime.local());
+	const quick = quickStats(duties);
+	line("Summary", 12, true);
+	line(
+		`Last 7d duty: ${toHM(
+			roll.mins7
+		)} (≤60h) | Avg weekly (28d): ${roll.avgWeeklyHrs28.toFixed(
+			1
+		)} h (≤50h) | Consecutive work days: ${roll.consecWorkDays}`,
+		10
+	);
+	line(
+		`Two-off-in-14: ${
+			roll.hasTwoConsecutiveOffIn14 ? "Yes" : "No"
+		} | Off days in 28: ${roll.offDaysIn28}`,
+		10
+	);
+	line(
+		`Avg duty length: ${toHM(
+			quick.averages.avgDutyLen
+		)} | Avg sectors: ${quick.averages.avgSectors.toFixed(
+			2
+		)} | Common report window: ${quick.averages.commonReportWindow || "—"}`,
+		10
+	);
+	y += 6;
+
+	if (duties.length) {
+		const sel = duties[0],
+			prev = duties[1] || null;
+		const fs = flagsForDuty(sel, prev, roll);
+		if (fs.length) {
+			line("Flagged Items (most recent duty)", 12, true);
+			for (const f of fs) line(`[${f.level.toUpperCase()}] ${f.text}`, 10);
+			y += 6;
+		}
+	}
+
+	line("Duties", 12, true);
+	line(
+		"Date  | Report → Off | Type | Sectors | FDP | Location | Disc (min) | Notes",
+		10,
+		true
+	);
+	for (const d of duties) {
+		const R = DateTime.fromISO(
+			d.report || d.sbStart || DateTime.local().toISO()
+		).toFormat("dd LLL yyyy");
+		const Rt = d.report
+			? DateTime.fromISO(d.report).toFormat("HH:mm")
+			: d.sbStart
+			? DateTime.fromISO(d.sbStart).toFormat("HH:mm")
+			: "—";
+		const Ot = d.off
+			? DateTime.fromISO(d.off).toFormat("HH:mm")
+			: d.sbEnd
+			? DateTime.fromISO(d.sbEnd).toFormat("HH:mm")
+			: "—";
+		const fdp =
+			d.report && d.off
+				? toHM(durMins(d.report, d.off))
+				: d.sbStart && d.sbEnd
+				? `SB ${toHM(durMins(d.sbStart, d.sbEnd))}`
+				: "—";
+		const row = `${R} | ${Rt} → ${Ot} | ${d.dutyType || ""} | ${
+			d.sectors || 0
+		} | ${fdp} | ${d.location || ""} | ${d.discretionMins || 0} | ${
+			d.notes || ""
+		}`;
+		line(row, 10);
+		y += 2;
+	}
+
+	doc.save(`duties-${DateTime.local().toFormat("yyyyLLdd-HHmm")}.pdf`);
+	toast("PDF generated", "info", 1600);
 }
 
-/* =======================================================
-   Kick things off
-======================================================= */
-boot();
+/* ---------------- Events ---------------- */
+form?.addEventListener("submit", async (e) => {
+	e.preventDefault();
+	await saveDuty();
+});
+btnDeleteDuty?.addEventListener("click", deleteSelected);
+btnClear?.addEventListener("click", clearAll);
+
+dutyTypeSel?.addEventListener("change", updateStandbyVisibility);
+
+btnExport?.addEventListener("click", async () => {
+	const choice = prompt('Export format: type "json" or "csv"', "json");
+	if (!choice) return;
+	if (choice.toLowerCase().startsWith("c")) await exportCSV();
+	else await exportJSON();
+});
+btnImport?.addEventListener("click", () => importFile.click());
+importFile?.addEventListener("change", async (e) => {
+	const file = e.target.files?.[0];
+	if (file) await importJSONFile(file);
+	importFile.value = "";
+});
+async function importJSONFile(file) {
+	const text = await file.text();
+	const arr = dutiesFromJSON(text);
+	if (!confirm(`Import ${arr.length} duties? This will replace current data.`))
+		return;
+	await db.transaction("rw", db.duties, async () => {
+		await db.duties.clear();
+		for (const d of arr) await db.duties.add(d);
+	});
+	selectedId = null;
+	await renderAll();
+	toast("Imported data", "success");
+}
+btnPDF?.addEventListener("click", exportPDF);
+
+/* Keyboard: selection & delete */
+document.addEventListener("keydown", async (e) => {
+	if (
+		["INPUT", "TEXTAREA", "SELECT"].includes(
+			(e.target.tagName || "").toUpperCase()
+		)
+	)
+		return;
+	if (e.key === "Delete") {
+		e.preventDefault();
+		await deleteSelected();
+	}
+	if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+		const duties = await getAllDutiesSorted();
+		if (!duties.length) return;
+		const idx = selectedId ? duties.findIndex((d) => d.id === selectedId) : 0;
+		const nextIdx =
+			e.key === "ArrowUp"
+				? Math.max(0, idx - 1)
+				: Math.min(duties.length - 1, idx + 1);
+		const next = duties[nextIdx];
+		selectedId = next.id;
+		dutyToForm(next);
+		await computeAndRender();
+	}
+});
+
+/* ---------------- Boot ---------------- */
+window.addEventListener("load", () => {
+	versionStamp.textContent = APP_VERSION;
+	updateStandbyVisibility();
+	renderAll();
+});

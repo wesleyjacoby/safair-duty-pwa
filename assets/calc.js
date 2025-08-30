@@ -1,368 +1,568 @@
 // assets/calc.js
-// Core calculations for legality, fatigue, and cumulative limits.
-// Uses the global Luxon (UMD): <script src="vendor/luxon.min.js"></script>
-const { DateTime, Interval } = luxon;
+// OM-aligned legality engine — "Always acclimatised" (Table 9-1 only).
+// Luxon is loaded globally via index.html.
 
-/* ======================== Config ======================== */
-// Treat all OM time-bands in local SA time unless you later add time-zone inputs.
-const LOCAL_TZ = "Africa/Johannesburg";
+const { DateTime, Interval, Duration } = luxon;
 
-// WOCL window per FRMP alignment: 02:00–06:00 (with ±30m chronotype shift)
-const WOCL_START = { h: 2, m: 0 };
-const WOCL_END = { h: 6, m: 0 };
-
-/* FDP table (minutes): acclimatised, two-pilot, scheduled.
-   Bands are local report-time ranges; columns are sectors 1..8.
-   Replace numbers if your OM has slightly different values. */
-const FDP_TABLE = {
-	"0500-0659": [780, 735, 690, 645, 600, 555, 540, 540], // 13:00, 12:15, ...
-	"0700-1359": [840, 795, 750, 705, 660, 615, 570, 540], // 14:00, 13:15, ...
-	"1400-2059": [780, 735, 690, 645, 600, 555, 540, 540],
-	"2100-2159": [720, 675, 630, 585, 540, 540, 540, 540],
-	"2200-0459": [660, 615, 570, 540, 540, 540, 540, 540],
+/** ---------------- Config ---------------- */
+export const RULES = {
+	localNight: { from: { h: 22, m: 0 }, to: { h: 6, m: 0 } }, // 22:00–06:00
+	windows: {
+		last7Days: 7,
+		last14Days: 14,
+		last28Days: 28,
+		avgWeeklyCapHrs: 50, // ≤50 h averaged over 4 weeks (28d)
+		maxDuty7DaysHrs: 60, // ≤60 h duty in 7 days
+	},
 };
 
-/* ======================== Utilities ======================== */
-export function minutesBetween(aIso, bIso) {
-	const a = DateTime.fromISO(aIso);
-	const b = DateTime.fromISO(bIso);
-	if (!a.isValid || !b.isValid) return 0;
-	return Math.max(0, b.diff(a, "minutes").minutes);
+/** ---------------- Utilities ---------------- */
+export function dt(v) {
+	return v instanceof DateTime ? v : DateTime.fromISO(v, { zone: "local" });
 }
-
-export function minToHM(mins) {
-	const m = Math.max(0, Math.round(mins));
+export function durMins(a, b) {
+	const A = dt(a),
+		B = dt(b);
+	if (!A?.isValid || !B?.isValid) return 0;
+	return Math.max(0, Math.round(B.diff(A, "minutes").minutes));
+}
+export function toHM(totalMins) {
+	const m = Math.max(0, Math.round(totalMins));
 	const h = Math.floor(m / 60);
-	const mm = `${m % 60}`.padStart(2, "0");
+	const mm = String(m % 60).padStart(2, "0");
 	return `${h}:${mm}`;
 }
-
-function localize(dt) {
-	return dt.setZone(LOCAL_TZ, { keepLocalTime: true });
+export function dayKey(v) {
+	return dt(v).toFormat("yyyy-LL-dd");
 }
 
-/* ======================== Disruptive flags (advisory) ======================== */
-export function classifyDisruptive(reportIso, offIso) {
-	const rpt = DateTime.fromISO(reportIso);
-	const off = DateTime.fromISO(offIso);
-	if (!rpt.isValid || !off.isValid) return [];
-
-	const rLocal = localize(rpt);
-	const oLocal = localize(off);
-	const flags = [];
-
-	if (rLocal.hour === 5) flags.push("Early start");
-	if (oLocal.hour >= 23 || oLocal.hour <= 1) flags.push("Late finish");
-
-	// Night duty if any overlap with 02:00–04:59 local
-	const nightStart = rLocal.startOf("day").set({ hour: 2 });
-	const nightEnd = rLocal.startOf("day").set({ hour: 5 });
-	const duty = Interval.fromDateTimes(rLocal, oLocal);
-	if (duty.overlaps(Interval.fromDateTimes(nightStart, nightEnd)))
-		flags.push("Night duty");
-
-	return flags;
+export function normalizeDuty(d) {
+	const n = { ...d };
+	n.id ??= crypto.randomUUID?.() ?? String(Math.random());
+	n.report = d.report ? dt(d.report).toISO() : null;
+	n.off = d.off ? dt(d.off).toISO() : null;
+	n.dutyType = d.dutyType || "FDP";
+	n.sectors = Number(d.sectors ?? 0);
+	n.location = d.location || "Home";
+	n.discretionMins = Number(d.discretionMins ?? 0);
+	n.discretionReason = d.discretionReason || "";
+	n.discretionBy = d.discretionBy || "";
+	n.notes = d.notes || "";
+	// Standby
+	n.sbType = d.sbType || "Home";
+	n.sbStart = d.sbStart ? dt(d.sbStart).toISO() : null;
+	n.sbEnd = d.sbEnd ? dt(d.sbEnd).toISO() : null;
+	n.sbCalled = Boolean(d.sbCalled);
+	n.sbCall = d.sbCall ? dt(d.sbCall).toISO() : null;
+	return n;
 }
 
-/* ======================== FDP Limit: OM-style table lookup ======================== */
-export function fdpLimitAccl(reportIso, sectors = 1) {
-	const rpt = DateTime.fromISO(reportIso);
-	if (!rpt.isValid) return 0;
-	const r = localize(rpt);
-	const hhmm = r.toFormat("HHmm");
-	let band = "2200-0459";
-	if (hhmm >= "0500" && hhmm <= "0659") band = "0500-0659";
-	else if (hhmm >= "0700" && hhmm <= "1359") band = "0700-1359";
-	else if (hhmm >= "1400" && hhmm <= "2059") band = "1400-2059";
-	else if (hhmm >= "2100" && hhmm <= "2159") band = "2100-2159";
-	// else remains 2200-0459
-	const s = Math.max(1, Math.min(8, sectors | 0));
-	return FDP_TABLE[band][s - 1] || 0;
+/** ---------------- OM Table 9-1 (mins) ----------------
+ * Two-pilot, acclimatised, scheduled.
+ * Sectors index is 1..8; for 8+ use column 8.
+ */
+const T9_1 = [
+	{
+		band: [5 * 60, 6 * 60 + 59],
+		mins: [780, 735, 690, 645, 600, 555, 540, 540],
+		label: "05:00–06:59",
+	},
+	{
+		band: [7 * 60, 13 * 60 + 59],
+		mins: [840, 795, 750, 705, 660, 615, 570, 540],
+		label: "07:00–13:59",
+	},
+	{
+		band: [14 * 60, 20 * 60 + 59],
+		mins: [780, 735, 690, 645, 600, 555, 540, 540],
+		label: "14:00–20:59",
+	},
+	{
+		band: [21 * 60, 21 * 60 + 59],
+		mins: [720, 675, 630, 585, 540, 540, 540, 540],
+		label: "21:00–21:59",
+	},
+	{
+		band: [22 * 60, 24 * 60 + 59],
+		mins: [660, 615, 570, 540, 540, 540, 540, 540],
+		label: "22:00–04:59",
+	},
+	{
+		band: [0, 4 * 60 + 59],
+		mins: [660, 615, 570, 540, 540, 540, 540, 540],
+		label: "22:00–04:59",
+	}, // wrap
+];
+function timeBandContains(minsOfDay, [start, end]) {
+	if (start <= end) return minsOfDay >= start && minsOfDay <= end;
+	return minsOfDay >= start || minsOfDay <= end; // wrap across midnight
+}
+function pickBySectors(arr, sectors) {
+	const idx = Math.max(1, Math.min(sectors || 1, 8)) - 1;
+	return arr[idx];
 }
 
-/* ======================== Split duty extension (placeholder) ======================== */
-export function splitDutyExtensionMins(consecutiveRestMins) {
-	const r = Math.max(0, consecutiveRestMins | 0);
-	if (r < 180) return 0;
-	return Math.floor(r / 2);
-}
-
-/* ======================== Earliest next report (rest rules) ======================== */
-export function earliestNextReport(offIso, location = "Home") {
-	const off = DateTime.fromISO(offIso);
-	if (!off.isValid)
-		return { earliest: DateTime.invalid("bad off"), basis: "invalid" };
-
-	if (location === "Home") {
-		return { earliest: off.plus({ hours: 12 }), basis: "Home: 12h min rest" };
-	}
-
-	// Away logic with local-night heuristic
-	const try10 = off.plus({ hours: 10 });
-	const restInt10 = Interval.fromDateTimes(off, try10);
-
-	const dn = off.startOf("day");
-	const night1 = Interval.fromDateTimes(dn.set({ hour: 22 }), dn.endOf("day"));
-	const night2 = Interval.fromDateTimes(
-		dn.minus({ days: 1 }).set({ hour: 22 }),
-		dn.set({ hour: 8 })
-	);
-
-	const hasNight10 = restInt10.overlaps(night1) || restInt10.overlaps(night2);
-	if (hasNight10)
-		return { earliest: try10, basis: "Away: 10h incl. local night" };
-
-	const try12 = off.plus({ hours: 12 });
-	const restInt12 = Interval.fromDateTimes(off, try12);
-	const hasNight12 = restInt12.overlaps(night1) || restInt12.overlaps(night2);
-	if (hasNight12)
-		return { earliest: try12, basis: "Away: 12h rest (no local night in 10h)" };
-
-	const try14 = off.plus({ hours: 14 });
-	return { earliest: try14, basis: "Away: 14h rest (outside local night)" };
-}
-
-/* ======================== Sleep metrics for fatigue ======================== */
-export function sleepMetricsForReport(allSleep, reportIso) {
-	const report = DateTime.fromISO(reportIso);
-	const sleeps = (allSleep || [])
-		.map((s) => ({
-			start: DateTime.fromISO(s.start),
-			end: DateTime.fromISO(s.end),
-			type: s.type,
-			quality: s.quality || 3,
-		}))
-		.filter((s) => s.start.isValid && s.end.isValid)
-		.sort((a, b) => a.start - b.start);
-
-	const win24 = Interval.fromDateTimes(report.minus({ hours: 24 }), report);
-	const win48 = Interval.fromDateTimes(report.minus({ hours: 48 }), report);
-
-	function sumOverlapHours(win) {
-		let total = 0;
-		for (const s of sleeps) {
-			const iv = Interval.fromDateTimes(s.start, s.end);
-			const ov = win.intersection(iv);
-			if (ov) total += ov.length("hours");
-		}
-		return Math.round(total * 10) / 10;
-	}
-
-	// Last wake before report
-	let lastWake = null;
-	for (let i = sleeps.length - 1; i >= 0; i--) {
-		if (sleeps[i].end <= report) {
-			lastWake = sleeps[i].end;
-			break;
-		}
-	}
-	if (!lastWake) {
-		const d = report.startOf("day").set({ hour: 7 });
-		lastWake = d > report ? d.minus({ days: 1 }) : d;
-	}
-
+/** FDP limit (mins) — Always Table 9-1 */
+export function fdpLimitMins(duty) {
+	const sectors = Number(duty.sectors || 1);
+	const R = dt(duty.report);
+	const t = R.isValid ? R.hour * 60 + R.minute : 7 * 60; // default to 07:00 band if missing
+	const row = T9_1.find((r) => timeBandContains(t, r.band)) || T9_1[1];
 	return {
-		priorSleep24: sumOverlapHours(win24),
-		priorSleep48: sumOverlapHours(win48),
-		lastWake,
+		mins: pickBySectors(row.mins, sectors),
+		table: "9-1",
+		band: row.label,
 	};
 }
 
-/* ======================== WOCL overlap ======================== */
-export function woclOverlapMinutes(reportIso, offIso, chronotype = "neutral") {
-	const rpt = localize(DateTime.fromISO(reportIso));
-	const off = localize(DateTime.fromISO(offIso));
-	if (!rpt.isValid || !off.isValid) return 0;
-
-	let shiftMin = 0;
-	if (chronotype === "early") shiftMin = -30;
-	if (chronotype === "late") shiftMin = 30;
-
-	const day = rpt.startOf("day");
-	const start = day
-		.set({ hour: WOCL_START.h, minute: WOCL_START.m })
-		.plus({ minutes: shiftMin });
-	const end = day
-		.set({ hour: WOCL_END.h, minute: WOCL_END.m })
-		.plus({ minutes: shiftMin });
-
-	const duty = Interval.fromDateTimes(rpt, off);
-	const wocl = Interval.fromDateTimes(start, end);
-	const ov = duty.overlaps(wocl) ? duty.intersection(wocl) : null;
-	return ov ? Math.round(ov.length("minutes")) : 0;
-}
-
-/* ======================== Peak time awake around duty ======================== */
-function estimateBedtime(offIso, chronotype = "neutral") {
-	const off = DateTime.fromISO(offIso);
-	const map = {
-		early: { h: 21, m: 30 },
-		neutral: { h: 22, m: 30 },
-		late: { h: 23, m: 30 },
-	};
-	const t = map[chronotype] || map.neutral;
-	let bed = off.set({ hour: t.h, minute: t.m, second: 0, millisecond: 0 });
-	if (bed < off) bed = bed.plus({ days: 1 });
-	return bed;
-}
-
-export function timeAwakeAroundDuty(allSleep, reportIso, offIso, chronotype) {
-	const { lastWake } = sleepMetricsForReport(allSleep, reportIso);
-	const report = DateTime.fromISO(reportIso);
-	const off = DateTime.fromISO(offIso);
-
-	let sinceWakeAtReport = 0;
-	let sinceWakeAtOff = 0;
-	let untilNextSleep = 0;
-	let usedEstimate = false;
-
-	if (lastWake && lastWake.isValid) {
-		sinceWakeAtReport = Math.max(0, report.diff(lastWake, "hours").hours);
-		sinceWakeAtOff = Math.max(0, off.diff(lastWake, "hours").hours);
-	} else {
-		const fallback = report.startOf("day").set({ hour: 7 });
-		sinceWakeAtReport = Math.max(0, report.diff(fallback, "hours").hours);
-		sinceWakeAtOff = Math.max(0, off.diff(fallback, "hours").hours);
-		usedEstimate = true;
-	}
-
-	const nextSleep = estimateBedtime(offIso, chronotype);
-	untilNextSleep = Math.max(0, nextSleep.diff(off, "hours").hours);
-
-	return {
-		sinceWakeAtReport: Math.round(sinceWakeAtReport * 10) / 10,
-		sinceWakeAtOff: Math.round(sinceWakeAtOff * 10) / 10,
-		untilNextSleep: Math.round(untilNextSleep * 10) / 10,
-		usedEstimate,
-	};
-}
-
-/* ======================== Fatigue score (advisory) ======================== */
-export function fatigueScore({
-	priorSleep24,
-	priorSleep48,
-	timeAwakeHrs,
-	timeAwakePeakHrs,
-	woclOverlapMins,
-	sps,
-}) {
-	const awake =
-		typeof timeAwakePeakHrs === "number" ? timeAwakePeakHrs : timeAwakeHrs;
-	let score = 100;
-
-	// Sleep debt penalties
-	if (priorSleep24 < 7) score -= (7 - priorSleep24) * 6;
-	if (priorSleep48 < 14) score -= (14 - priorSleep48) * 2;
-
-	// Wakefulness penalties (nonlinear)
-	if (awake > 12) score -= (awake - 12) * 3;
-	if (awake > 16) score -= (awake - 16) * 5;
-	if (awake > 18) score -= (awake - 18) * 7;
-
-	// WOCL exposure
-	score -= Math.min(60, woclOverlapMins || 0) * 0.4;
-
-	// SPS (1–7, neutral at 3)
-	if (sps && sps >= 1 && sps <= 7) score -= (sps - 3) * 4;
-
-	return Math.max(0, Math.min(100, Math.round(score)));
-}
-
-/* ======================== Cumulative + Days-off ======================== */
-export function computeCumulativeAndDaysOff(allDuties, refIso) {
-	const ref = DateTime.fromISO(refIso);
-	if (!ref.isValid)
-		return {
-			hours7: 0,
-			hours28: 0,
-			avgWeekly28: 0,
-			consecWork: 0,
-			offIn28: 0,
-			hasTwoIn14: false,
-			avgOffPer28: 0,
-		};
-
-	const normalized = (allDuties || [])
-		.map((d) => {
-			const report = DateTime.fromISO(d.report || d.reportIso);
-			const off = DateTime.fromISO(d.off || d.offIso);
-			const mins =
-				report.isValid && off.isValid ? off.diff(report, "minutes").minutes : 0;
-			return { ...d, report, off, mins };
-		})
-		.filter((d) => d.report.isValid && d.off.isValid && d.mins > 0);
-
-	const win7Start = ref.minus({ days: 6 }).startOf("day");
-	const win28Start = ref.minus({ days: 27 }).startOf("day");
-
-	function sumDutyMinutesWithin(startDT, endDT) {
-		const win = Interval.fromDateTimes(startDT, endDT.endOf("day"));
-		let total = 0;
-		for (const d of normalized) {
-			const iv = Interval.fromDateTimes(d.report, d.off);
-			const ov = win.intersection(iv);
-			if (ov) total += ov.length("minutes");
-		}
-		return total;
-	}
-
-	const mins7 = sumDutyMinutesWithin(win7Start, ref);
-	const mins28 = sumDutyMinutesWithin(win28Start, ref);
-
-	const hours7 = Math.round((mins7 / 60) * 10) / 10;
-	const hours28 = Math.round((mins28 / 60) * 10) / 10;
-	const avgWeekly28 = Math.round((hours28 / 4) * 10) / 10;
-
-	// Day buckets for last 84 days (for days-off stats)
-	const dayBuckets = [];
-	for (let i = 83; i >= 0; i--) {
-		const day = ref.minus({ days: i }).startOf("day");
-		const worked = normalized.some((d) =>
-			Interval.fromDateTimes(d.report, d.off).overlaps(
-				Interval.fromDateTimes(day.startOf("day"), day.endOf("day"))
-			)
+/** Rest minima (simple, practical):
+ * Home: ≥12h. Away: ≥10h if local night included, else ≥12h (≥14h if clearly outside local night).
+ */
+function includesLocalNight(startISO, endISO) {
+	const start = dt(startISO),
+		end = dt(endISO);
+	if (!start?.isValid || !end?.isValid) return false;
+	const mkNight = (anchor) =>
+		Interval.fromDateTimes(
+			anchor.set({ hour: 22, minute: 0, second: 0, millisecond: 0 }),
+			anchor
+				.plus({ days: 1 })
+				.set({ hour: 6, minute: 0, second: 0, millisecond: 0 })
 		);
-		dayBuckets.push({ day, worked });
+	const rest = Interval.fromDateTimes(start, end);
+	return (
+		rest.overlaps(mkNight(start.startOf("day"))) ||
+		rest.overlaps(mkNight(end.startOf("day")))
+	);
+}
+function restRequirement(prevDuty, upcomingDuty) {
+	if (!prevDuty) return { minMins: 0, label: "—" };
+	const away = String(upcomingDuty.location || "").toLowerCase() === "away";
+	if (!away) return { minMins: 12 * 60, label: "Home base ≥12h" };
+	if (includesLocalNight(prevDuty.off, upcomingDuty.report))
+		return { minMins: 10 * 60, label: "Away incl. local night ≥10h" };
+	const prevOff = dt(prevDuty.off),
+		rep = dt(upcomingDuty.report);
+	const outsideNight =
+		prevOff.hour >= 6 &&
+		rep.hour <= 22 &&
+		prevOff.startOf("day").toISODate() === rep.startOf("day").toISODate();
+	if (outsideNight)
+		return { minMins: 14 * 60, label: "Away outside local night ≥14h" };
+	return { minMins: 12 * 60, label: "Away, no local night ≥12h" };
+}
+
+/** Disruptive classification (info only) */
+export function classifyDisruptive(duty) {
+	const R = dt(duty.report),
+		O = dt(duty.off);
+	if (!R.isValid || !O.isValid)
+		return { early: false, late: false, night: false, any: false };
+	const early = R.hour < 7;
+	const night = R.hour >= 22 || R.hour < 6 || O.hour >= 22 || O.hour < 6;
+	const late = O.hour >= 23;
+	const any = early || night || late;
+	return { early, night, late, any };
+}
+
+/** Single duty legality */
+export function dutyLegality(duty, prevDuty) {
+	const badges = [];
+
+	const fdpMins = durMins(duty.report, duty.off);
+	badges.push({ key: "fdp", status: "ok", text: `FDP ${toHM(fdpMins)}` });
+
+	const { mins: limit, table, band } = fdpLimitMins(duty);
+	let status = "ok";
+	if (fdpMins > limit) status = "bad";
+	else if (fdpMins >= limit - 30) status = "warn";
+	badges.push({
+		key: "limit",
+		status,
+		text: `Max FDP ${toHM(limit)} (T${table}, ${band})`,
+	});
+
+	badges.push({
+		key: "sectors",
+		status: duty.sectors > 0 ? "ok" : "warn",
+		text: `Sectors ${duty.sectors}`,
+	});
+
+	if (prevDuty) {
+		const restM = durMins(prevDuty.off, duty.report);
+		const req = restRequirement(prevDuty, duty);
+		let rs = "ok";
+		if (restM < req.minMins) rs = req.minMins - restM >= 60 ? "bad" : "warn";
+		badges.push({
+			key: "restOM",
+			status: rs,
+			text: `Rest ${toHM(restM)} (min ${toHM(req.minMins)} · ${req.label})`,
+		});
+	} else {
+		badges.push({ key: "restOM", status: "ok", text: "Rest —" });
 	}
 
-	// Consecutive work days ending today
-	let consecWork = 0;
-	for (let i = dayBuckets.length - 1; i >= 0; i--) {
-		if (dayBuckets[i].worked) consecWork++;
+	// Standby limits
+	const sbM =
+		duty.sbStart && duty.sbEnd ? durMins(duty.sbStart, duty.sbEnd) : 0;
+	if (sbM > 0)
+		badges.push({
+			key: "standby",
+			status: sbM > 12 * 60 ? "bad" : "ok",
+			text: `Standby ${toHM(sbM)} (≤12h)`,
+		});
+	if (duty.sbCalled) {
+		const sum = sbM + fdpMins;
+		badges.push({
+			key: "sbFdp",
+			status: sum > 20 * 60 ? "bad" : "ok",
+			text: `Standby+FDP ${toHM(sum)} (≤20h)`,
+		});
+	}
+
+	const disc = Number(duty.discretionMins || 0);
+	badges.push({
+		key: "disc",
+		status: disc > 0 ? (disc > 30 ? "warn" : "ok") : "ok",
+		text: `Discretion ${disc > 0 ? `${disc} min` : "—"}`,
+	});
+
+	const notes = [];
+	if (status === "bad")
+		notes.push(`FDP exceeds OM T${table} limit by ${toHM(fdpMins - limit)}.`);
+	if (disc > 0)
+		notes.push(
+			`Discretion used: ${disc} min (${duty.discretionReason || "—"}; by ${
+				duty.discretionBy || "—"
+			}).`
+		);
+	return { badges, notes };
+}
+
+/** Rolling windows & quick stats */
+export function isWorkingDuty(d) {
+	return (d?.dutyType || "").toLowerCase() !== "rest";
+}
+export function groupByDay(duties) {
+	const map = new Map();
+	for (const d of duties) {
+		if (!d.report || !d.off) continue;
+		const key = dayKey(d.report);
+		(map.get(key) || map.set(key, []).get(key)).push(d);
+	}
+	return map;
+}
+
+export function rollingStats(allDuties, ref = DateTime.local()) {
+	const duties = [...allDuties]
+		.filter((d) => d.report && d.off)
+		.sort((a, b) => dt(a.report) - dt(b.report));
+	const now = dt(ref);
+
+	const sumWindow = (days) => {
+		const start = now.minus({ days }).startOf("day");
+		const end = now.endOf("day");
+		let m = 0;
+		for (const d of duties) {
+			if (!isWorkingDuty(d)) continue;
+			const R = dt(d.report),
+				O = dt(d.off);
+			if (R > end || O < start) continue;
+			const s = R < start ? start : R;
+			const e = O > end ? end : O;
+			m += durMins(s, e);
+		}
+		return m;
+	};
+
+	const mins7 = sumWindow(RULES.windows.last7Days);
+	const mins28 = sumWindow(RULES.windows.last28Days);
+	const avgWeeklyHrs28 = mins28 / 4 / 60;
+
+	const byDay = groupByDay(duties);
+	let consecWorkDays = 0;
+	for (let i = 0; i < 60; i++) {
+		const day = now.minus({ days: i }).toFormat("yyyy-LL-dd");
+		const hadWork = (byDay.get(day) || []).some(isWorkingDuty);
+		if (hadWork) consecWorkDays++;
 		else break;
 	}
 
-	const last28 = dayBuckets.slice(-28);
-	const last14 = dayBuckets.slice(-14);
-	const offIn28 = last28.filter((d) => !d.worked).length;
+	const countOffDays = (days) => {
+		let count = 0;
+		for (let i = 0; i < days; i++) {
+			const day = now.minus({ days: i }).toFormat("yyyy-LL-dd");
+			const hadWork = (byDay.get(day) || []).some(isWorkingDuty);
+			if (!hadWork) count++;
+		}
+		return count;
+	};
 
-	let hasTwoIn14 = false;
-	for (let i = 0; i < last14.length - 1; i++) {
-		if (!last14[i].worked && !last14[i + 1].worked) {
-			hasTwoIn14 = true;
-			break;
+	const hasTwoConsecutiveOffIn14 = (() => {
+		let streak = 0;
+		for (let i = 0; i < RULES.windows.last14Days; i++) {
+			const day = now.minus({ days: i }).toFormat("yyyy-LL-dd");
+			const hadWork = (byDay.get(day) || []).some(isWorkingDuty);
+			if (!hadWork) {
+				streak++;
+				if (streak >= 2) return true;
+			} else streak = 0;
+		}
+		return false;
+	})();
+
+	const offDaysIn28 = countOffDays(RULES.windows.last28Days);
+	const meetsSixOffIn28 = offDaysIn28 >= 6;
+
+	const start28 = now.minus({ days: RULES.windows.last28Days }).startOf("day");
+	let discretionCount28 = 0;
+	for (const d of duties) {
+		const R = dt(d.report);
+		if (R >= start28 && R <= now && Number(d.discretionMins || 0) > 0)
+			discretionCount28++;
+	}
+
+	return {
+		mins7,
+		mins28,
+		avgWeeklyHrs28,
+		consecWorkDays,
+		hasTwoConsecutiveOffIn14,
+		offDaysIn28,
+		meetsSixOffIn28,
+		discretionCount28,
+	};
+}
+
+export function badgesFromRolling(roll) {
+	const b = [];
+	const s7 =
+		roll.mins7 > RULES.windows.maxDuty7DaysHrs * 60
+			? "bad"
+			: roll.mins7 > RULES.windows.maxDuty7DaysHrs * 60 - 60
+			? "warn"
+			: "ok";
+	b.push({
+		key: "duty7",
+		status: s7,
+		text: `Last 7d duty ${toHM(roll.mins7)} (≤${
+			RULES.windows.maxDuty7DaysHrs
+		}h)`,
+	});
+
+	let sAvg = "ok";
+	if (roll.avgWeeklyHrs28 > RULES.windows.avgWeeklyCapHrs) sAvg = "bad";
+	else if (roll.avgWeeklyHrs28 > RULES.windows.avgWeeklyCapHrs - 2)
+		sAvg = "warn";
+	b.push({
+		key: "avgWeekly",
+		status: sAvg,
+		text: `Avg weekly (28d) ${roll.avgWeeklyHrs28.toFixed(1)} h (≤50h)`,
+	});
+
+	b.push({
+		key: "consec",
+		status:
+			roll.consecWorkDays >= 7
+				? "bad"
+				: roll.consecWorkDays >= 6
+				? "warn"
+				: "ok",
+		text: `Consecutive work days ${roll.consecWorkDays}`,
+	});
+	b.push({
+		key: "twoOff14",
+		status: roll.hasTwoConsecutiveOffIn14 ? "ok" : "warn",
+		text: `≥2 consecutive off in 14: ${
+			roll.hasTwoConsecutiveOffIn14 ? "Yes" : "No"
+		}`,
+	});
+	b.push({
+		key: "sixOff28",
+		status: roll.meetsSixOffIn28 ? "ok" : "warn",
+		text: `Off days in 28: ${roll.offDaysIn28}`,
+	});
+	b.push({
+		key: "disc28",
+		status: roll.discretionCount28 > 0 ? "warn" : "ok",
+		text: `Discretion (28d): ${roll.discretionCount28}`,
+	});
+	return b;
+}
+
+/** Quick stats & flags (unchanged aside from no tags) */
+export function quickStats(allDuties) {
+	const duties = allDuties.filter((d) => d.report && d.off).map(normalizeDuty);
+	if (!duties.length)
+		return {
+			averages: {
+				avgDutyLen: 0,
+				avgSectors: 0,
+				earliestReportISO: null,
+				latestReportISO: null,
+				commonReportWindow: null,
+			},
+			counts: {
+				disruptiveThisMonth: 0,
+				withDiscretion: 0,
+				airportStandbyCalls: 0,
+				awayNightsThisMonth: 0,
+			},
+			standby: { usedPct: 0, avgCallNoticeMins: 0 },
+		};
+
+	let totalLen = 0,
+		totalSectors = 0,
+		earliest = null,
+		latest = null;
+	const hourBins = new Map();
+	for (const d of duties) {
+		totalLen += durMins(d.report, d.off);
+		totalSectors += Number(d.sectors || 0);
+		const R = dt(d.report);
+		if (!earliest || R < earliest) earliest = R;
+		if (!latest || R > latest) latest = R;
+		hourBins.set(R.hour, (hourBins.get(R.hour) || 0) + 1);
+	}
+	const avgDutyLen = totalLen / duties.length;
+	const avgSectors = totalSectors / duties.length;
+	let topHour = null,
+		topCount = -1;
+	for (const [h, c] of hourBins.entries())
+		if (c > topCount) {
+			topCount = c;
+			topHour = h;
+		}
+	const commonReportWindow =
+		topHour != null
+			? `${String(topHour).padStart(2, "0")}:00–${String(
+					(topHour + 1) % 24
+			  ).padStart(2, "0")}:00`
+			: null;
+
+	const now = DateTime.local();
+	const startOfMonth = now.startOf("month"),
+		endOfMonth = now.endOf("month");
+	const inMonth = (d) =>
+		dt(d.report) >= startOfMonth && dt(d.report) <= endOfMonth;
+
+	let disruptiveThisMonth = 0,
+		withDiscretion = 0,
+		airportStandbyCalls = 0,
+		awayNightsThisMonth = 0;
+	let standbyTotalDays = 0,
+		standbyUsedDays = 0,
+		callNoticeSum = 0,
+		callNoticeCount = 0;
+
+	for (const d of duties) {
+		const type = String(d.dutyType || "").toLowerCase();
+		if (inMonth(d)) {
+			if (classifyDisruptive(d).any) disruptiveThisMonth++;
+			if (Number(d.discretionMins || 0) > 0) withDiscretion++;
+			if (type.includes("standby") && d.sbCalled) airportStandbyCalls++;
+			if (String(d.location || "").toLowerCase() === "away") {
+				const R = dt(d.report),
+					O = dt(d.off);
+				if (R.startOf("day").toISODate() !== O.startOf("day").toISODate())
+					awayNightsThisMonth++;
+			}
+		}
+		if (type.includes("standby")) {
+			standbyTotalDays++;
+			if (d.sbCalled) {
+				standbyUsedDays++;
+				if (d.sbCall && d.report) {
+					callNoticeSum += Math.max(0, durMins(d.sbCall, d.report));
+					callNoticeCount++;
+				}
+			}
 		}
 	}
 
-	const win1 = dayBuckets.slice(0, 28);
-	const win2 = dayBuckets.slice(28, 56);
-	const win3 = dayBuckets.slice(56, 84);
-	const avgOffPer28 =
-		Math.round(
-			((win1.filter((d) => !d.worked).length +
-				win2.filter((d) => !d.worked).length +
-				win3.filter((d) => !d.worked).length) /
-				3) *
-				10
-		) / 10;
-
 	return {
-		hours7,
-		hours28,
-		avgWeekly28,
-		consecWork,
-		offIn28,
-		hasTwoIn14,
-		avgOffPer28,
+		averages: {
+			avgDutyLen,
+			avgSectors,
+			earliestReportISO: earliest ? earliest.toISO() : null,
+			latestReportISO: latest ? latest.toISO() : null,
+			commonReportWindow,
+		},
+		counts: {
+			disruptiveThisMonth,
+			withDiscretion,
+			airportStandbyCalls,
+			awayNightsThisMonth,
+		},
+		standby: {
+			usedPct: standbyTotalDays
+				? Math.round((standbyUsedDays / standbyTotalDays) * 100)
+				: 0,
+			avgCallNoticeMins: callNoticeCount
+				? Math.round(callNoticeSum / callNoticeCount)
+				: 0,
+		},
 	};
+}
+
+export function flagsForDuty(duty, prevDuty, roll) {
+	const flags = [];
+	const { mins: lim } = fdpLimitMins(duty);
+	const fdp = durMins(duty.report, duty.off);
+	if (fdp > lim)
+		flags.push({
+			level: "bad",
+			text: `FDP ${toHM(fdp)} exceeds OM limit ${toHM(lim)}.`,
+		});
+	else if (fdp >= lim - 30)
+		flags.push({
+			level: "warn",
+			text: `FDP within 30 min of OM limit (${toHM(fdp)}/${toHM(lim)}).`,
+		});
+
+	if (prevDuty) {
+		const restM = durMins(prevDuty.off, duty.report);
+		const req = restRequirement(prevDuty, duty);
+		if (restM < req.minMins)
+			flags.push({
+				level: req.minMins - restM >= 60 ? "bad" : "warn",
+				text: `Rest ${toHM(restM)} < ${toHM(req.minMins)} (${req.label}).`,
+			});
+	}
+
+	const sbM =
+		duty.sbStart && duty.sbEnd ? durMins(duty.sbStart, duty.sbEnd) : 0;
+	if (sbM > 12 * 60)
+		flags.push({ level: "bad", text: `Standby ${toHM(sbM)} exceeds 12h.` });
+	if (duty.sbCalled) {
+		const sum = sbM + fdp;
+		if (sum > 20 * 60)
+			flags.push({
+				level: "bad",
+				text: `Standby+FDP ${toHM(sum)} exceeds 20h.`,
+			});
+	}
+
+	if (!roll.hasTwoConsecutiveOffIn14)
+		flags.push({
+			level: "warn",
+			text: "No ≥2 consecutive off days in last 14.",
+		});
+	if (!roll.meetsSixOffIn28)
+		flags.push({
+			level: "warn",
+			text: `Only ${roll.offDaysIn28} off days in last 28.`,
+		});
+
+	if (classifyDisruptive(duty).any)
+		flags.push({ level: "info", text: "Disruptive duty (early/night/late)." });
+	if (Number(duty.discretionMins || 0) > 0)
+		flags.push({
+			level: "info",
+			text: `Discretion used: ${duty.discretionMins} min (${
+				duty.discretionReason || "—"
+			}).`,
+		});
+
+	return flags;
 }

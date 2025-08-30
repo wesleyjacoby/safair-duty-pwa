@@ -1,6 +1,6 @@
 {
-	"name": "Safair Duty & Fatigue",
-	"short_name": "Duty+Fatigue",
+	"name": "Duty Tracker (FlySafair)",
+	"short_name": "Duty Tracker",
 	"start_url": ".",
 	"display": "standalone",
 	"background_color": "#0b0f14",
