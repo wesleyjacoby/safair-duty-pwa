@@ -18,7 +18,7 @@
 
     <script defer src="vendor/luxon.min.js"></script>
     <script defer src="vendor/dexie.min.js"></script>
-    <script defer src="vendor/jspdf.umd.min.js"></script>
+    <!-- PDF removed: <script defer src="vendor/jspdf.umd.min.js"></script> -->
 
     <script type="module" src="assets/app.js"></script>
 </head>
@@ -32,7 +32,7 @@
         <button id="btnExport" class="btn ghost" title="Export JSON/CSV">Export</button>
         <button id="btnImport" class="btn ghost" title="Import JSON">Import</button>
         <input id="importFile" type="file" accept="application/json" hidden />
-        <button id="btnPDF" class="btn ghost" title="Generate PDF">PDF</button>
+        <!-- PDF button removed -->
     </header>
 
     <main class="container">
@@ -151,7 +151,8 @@
                 </fieldset>
 
                 <div class="actions">
-                    <button class="btn primary" type="submit">Save Duty</button>
+                    <button id="btnSave" class="btn primary" type="submit">Save Duty</button>
+                    <button id="btnCancelEdit" class="btn ghost" type="button" style="display:none">Cancel</button>
                     <button id="btnDeleteDuty" class="btn danger" type="button" title="Delete selected duty">
                         Delete selected duty
                     </button>
@@ -163,7 +164,7 @@
         <section class="panel">
             <div class="panel-header">
                 <h2>Duty Legality</h2>
-                <div class="muted small">FDP limit (acclimatised), sectors, rest, standby & cumulative windows.</div>
+                <div id="legalityContext" class="muted small"></div>
             </div>
             <div id="legalityBadges" class="badges badges-xl"></div>
             <div id="legalityNotes" class="small muted" style="margin-top:8px; display:none;"></div>
@@ -191,7 +192,8 @@
         <section class="panel">
             <div class="panel-header">
                 <h2>Duty Log</h2>
-                <div class="muted small">↑/↓ to change selection; Del to delete selected.</div>
+                <div class="muted small">Click to select. ↑/↓ to change; Del to delete.</div>
+                <div><button id="btnEditDuty" class="btn">Edit selected</button></div>
             </div>
             <div id="history"></div>
         </section>

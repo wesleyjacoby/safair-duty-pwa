@@ -3,7 +3,7 @@
    - Cache-first for same-origin static assets
    - Network-first for navigations (fallback to cached index.html)
 */
-const CACHE = "safair-duty-v1.0.0"; // bump on any asset changes
+const CACHE = "safair-duty-v1.0.1"; // bump on any asset changes
 
 const CORE_ASSETS = [
 	"./",

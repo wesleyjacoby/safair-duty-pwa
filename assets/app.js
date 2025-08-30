@@ -1,5 +1,4 @@
 // assets/app.js
-// UI wiring + storage + exports. OM Table 9-1 (always acclimatised).
 
 import {
 	normalizeDuty,
@@ -16,35 +15,40 @@ import {
 const { DateTime } = luxon;
 
 /* ---------------- Version ---------------- */
-const APP_VERSION = "v1.0.0";
+const APP_VERSION = "v1.0.1";
 
 /* ---------------- Dexie ---------------- */
 const db = new Dexie("safair-duty-db");
 db.version(2).stores({ duties: "++id, report, off, dutyType, location" });
 
 /* ---------------- State/els ---------------- */
-let selectedId = null;
+let selectedId = null; // currently selected in Duty Log
+let editingId = null; // id being edited (null => creating)
+
 const el = (id) => document.getElementById(id);
 
 const themeBtn = el("themeBtn");
 const btnExport = el("btnExport");
 const btnImport = el("btnImport");
 const importFile = el("importFile");
-const btnPDF = el("btnPDF");
 const btnClear = el("btnClear");
 
 const legalityBadges = el("legalityBadges");
 const legalityNotes = el("legalityNotes");
+const legalityContext = el("legalityContext");
 const quickStatsBox = el("quickStats");
-const historyDiv = el("history");
 const flagsFeed = el("flagsFeed");
+const historyDiv = el("history");
 const versionStamp = el("versionStamp");
 
 const form = el("dutyForm");
 const btnDeleteDuty = el("btnDeleteDuty");
+const btnEditDuty = el("btnEditDuty"); // <-- wire this
+const btnCancelEdit = el("btnCancelEdit"); // optional button in HTML
 const dutyTypeSel = el("dutyType");
 const sbSection = el("sbSection");
 const sbCalled = el("sbCalled");
+const saveBtn = form?.querySelector('button[type="submit"]');
 
 /* ---------------- Theme ---------------- */
 function isDark() {
@@ -60,13 +64,13 @@ setTheme(isDark());
 themeBtn?.addEventListener("click", () => setTheme(!isDark()));
 
 /* ---------------- Toast ---------------- */
-function toast(msg, type = "info", ms = 2200) {
-	let h = document.getElementById("toasts");
-	if (!h) {
-		h = document.createElement("div");
-		h.id = "toasts";
-		h.setAttribute("aria-live", "polite");
-		Object.assign(h.style, {
+function toast(msg, type = "info", ms = 2000) {
+	let host = document.getElementById("toasts");
+	if (!host) {
+		host = document.createElement("div");
+		host.id = "toasts";
+		host.setAttribute("aria-live", "polite");
+		Object.assign(host.style, {
 			position: "fixed",
 			right: "14px",
 			bottom: "14px",
@@ -75,10 +79,10 @@ function toast(msg, type = "info", ms = 2200) {
 			gap: "8px",
 			maxWidth: "80vw",
 		});
-		document.body.appendChild(h);
+		document.body.appendChild(host);
 	}
-	const e = document.createElement("div");
-	e.textContent = msg;
+	const n = document.createElement("div");
+	n.textContent = msg;
 	const bg =
 		type === "bad"
 			? "#c62828"
@@ -87,7 +91,7 @@ function toast(msg, type = "info", ms = 2200) {
 			: type === "success"
 			? "#1e8e3e"
 			: "#2458e6";
-	Object.assign(e.style, {
+	Object.assign(n.style, {
 		padding: "10px 12px",
 		borderRadius: "10px",
 		color: "#fff",
@@ -95,54 +99,100 @@ function toast(msg, type = "info", ms = 2200) {
 		boxShadow: "0 6px 20px rgba(0,0,0,.15)",
 		background: bg,
 	});
-	h.appendChild(e);
+	host.appendChild(n);
 	setTimeout(() => {
-		e.style.opacity = "0";
-		e.style.transform = "translateY(6px)";
-		e.style.transition = "all .2s ease";
-		setTimeout(() => e.remove(), 220);
+		n.style.opacity = "0";
+		n.style.transform = "translateY(6px)";
+		n.style.transition = "all .2s ease";
+		setTimeout(() => n.remove(), 220);
 	}, ms);
 }
 
+/* ---------------- Injected CSS for Flag list (light + dark tuned; accent removed) ---------------- */
+function ensureFlagStyles() {
+	if (document.getElementById("flagStyles")) return;
+	const s = document.createElement("style");
+	s.id = "flagStyles";
+	s.textContent = `
+    #flagsFeed { list-style: none; padding: 0; margin: 0; }
+    #flagsFeed li { margin: 6px 0; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--surface-3, #e6e6e6); background: var(--surface-1, #fff); color: inherit; }
+    #flagsFeed li.month { background: transparent; border: none; padding: 6px 0 0; color: var(--muted, #6b7280); font-weight: 700; }
+    #flagsFeed li.flag { display: flex; gap: 10px; align-items: flex-start; }
+    #flagsFeed li.flag .msg { flex: 1 1 auto; }
+    #flagsFeed li.flag .chip { font-size: 11px; line-height: 1; padding: 6px 8px; border-radius: 999px; border: 1px solid currentColor; }
+
+    /* -------- Light theme (default) -------- */
+    /* Warn (amber) */
+    #flagsFeed li.warn { border-color: #b26a00; background: rgba(178,106,0,0.10); }
+    #flagsFeed li.warn .chip { color: #8a5a00; background: rgba(178,106,0,0.10); border-color: #b26a00; }
+    /* Bad (red) */
+    #flagsFeed li.bad { border-color: #c62828; background: rgba(198,40,40,0.10); }
+    #flagsFeed li.bad .chip { color: #8f1e1e; background: rgba(198,40,40,0.10); border-color: #c62828; }
+    /* Info (blue) */
+    #flagsFeed li.info { border-color: #2458e6; background: rgba(36,88,230,0.10); }
+    #flagsFeed li.info .chip { color: #1d46b3; background: rgba(36,88,230,0.10); border-color: #2458e6; }
+
+    /* -------- Dark theme -------- */
+    [data-theme="dark"] #flagsFeed li { border-color: var(--surface-3, #2f2f33); background: var(--surface-1, #111214); }
+    /* Warn */
+    [data-theme="dark"] #flagsFeed li.warn { border-color: #6b4800; background: rgba(107,72,0,0.18); }
+    [data-theme="dark"] #flagsFeed li.warn .chip { color: #ffd18a; background: rgba(107,72,0,0.18); border-color: #d7a049; }
+    /* Bad */
+    [data-theme="dark"] #flagsFeed li.bad { border-color: #662020; background: rgba(102,32,32,0.18); }
+    [data-theme="dark"] #flagsFeed li.bad .chip { color: #ff9b9b; background: rgba(102,32,32,0.18); border-color: #e36a6a; }
+    /* Info */
+    [data-theme="dark"] #flagsFeed li.info { border-color: #1f3f99; background: rgba(31,63,153,0.18); }
+    [data-theme="dark"] #flagsFeed li.info .chip { color: #9fb6ff; background: rgba(31,63,153,0.18); border-color: #6f8df4; }
+  `;
+	document.head.appendChild(s);
+}
+
 /* ---------------- Helpers ---------------- */
+function updateStandbyVisibility() {
+	const isStandby = (dutyTypeSel.value || "").toLowerCase() === "standby";
+	if (sbSection) sbSection.style.display = isStandby ? "block" : "none";
+}
 function formToDuty() {
 	const f = new FormData(form);
 	const o = Object.fromEntries(f.entries());
-	o.sbCalled = sbCalled.checked;
-	return normalizeDuty({
-		id: selectedId,
-		report: o.report,
-		off: o.off,
+	const d = normalizeDuty({
+		id: editingId,
 		dutyType: o.dutyType,
+		report: o.report || null,
+		off: o.off || null,
 		sectors: Number(o.sectors || 0),
-		location: o.location,
+		location: o.location || "Home",
 		discretionMins: Number(o.discretionMins || 0),
-		discretionReason: o.discretionReason,
-		discretionBy: o.discretionBy,
-		notes: o.notes,
-		sbType: o.sbType,
+		discretionReason: o.discretionReason || "",
+		discretionBy: o.discretionBy || "",
+		tags: o.tags || "",
+		notes: o.notes || "",
+		sbType: o.sbType || "Home",
 		sbStart: o.sbStart || null,
 		sbEnd: o.sbEnd || null,
-		sbCalled: o.sbCalled,
+		sbCalled: el("sbCalled")?.checked || false,
 		sbCall: o.sbCall || null,
 	});
+	return d;
 }
 function dutyToForm(d) {
 	const n = normalizeDuty(d);
 	form.reset();
+	el("dutyType").value = n.dutyType || "FDP";
 	el("report").value = n.report
 		? DateTime.fromISO(n.report).toFormat("yyyy-LL-dd'T'HH:mm")
 		: "";
 	el("off").value = n.off
 		? DateTime.fromISO(n.off).toFormat("yyyy-LL-dd'T'HH:mm")
 		: "";
-	dutyTypeSel.value = n.dutyType || "FDP";
 	el("sectors").value = Number(n.sectors || 0);
 	el("location").value = n.location || "Home";
 	el("discretionMins").value = Number(n.discretionMins || 0);
 	el("discretionReason").value = n.discretionReason || "";
 	el("discretionBy").value = n.discretionBy || "";
+	if (el("tags")) el("tags").value = n.tags || "";
 	el("notes").value = n.notes || "";
+
 	el("sbType").value = n.sbType || "Home";
 	el("sbStart").value = n.sbStart
 		? DateTime.fromISO(n.sbStart).toFormat("yyyy-LL-dd'T'HH:mm")
@@ -150,19 +200,19 @@ function dutyToForm(d) {
 	el("sbEnd").value = n.sbEnd
 		? DateTime.fromISO(n.sbEnd).toFormat("yyyy-LL-dd'T'HH:mm")
 		: "";
-	sbCalled.checked = !!n.sbCalled;
+	if (sbCalled) sbCalled.checked = !!n.sbCalled;
 	el("sbCall").value = n.sbCall
 		? DateTime.fromISO(n.sbCall).toFormat("yyyy-LL-dd'T'HH:mm")
 		: "";
 	updateStandbyVisibility();
 }
-function updateStandbyVisibility() {
-	const isStandby = (dutyTypeSel.value || "").toLowerCase() === "standby";
-	sbSection.style.display = isStandby ? "block" : "none";
-}
 function safeMillis(v) {
 	const D = dt(v);
 	return D?.isValid ? D.toMillis() : 0;
+}
+function setSaveLabel() {
+	if (!saveBtn) return;
+	saveBtn.textContent = editingId ? "Update Duty" : "Save Duty";
 }
 
 /* ---------------- CRUD ---------------- */
@@ -176,15 +226,17 @@ async function getAllDutiesSorted() {
 }
 async function saveDuty() {
 	const d = formToDuty();
+
 	const isStandby = (d.dutyType || "").toLowerCase() === "standby";
 	const hasFDP = Boolean(d.report && d.off);
 
+	// Validate
 	if (isStandby && !d.sbCalled && !hasFDP) {
 		if (!d.sbStart || !d.sbEnd) {
 			alert("Please enter Standby Window Start and End.");
 			return;
 		}
-		d.sectors = 0; // standby-only -> no legs
+		d.sectors = 0;
 	} else {
 		if (!d.report || !d.off) {
 			alert("Please enter both Sign On and Sign Off.");
@@ -196,30 +248,32 @@ async function saveDuty() {
 		}
 	}
 
-	if (d.id) {
-		const updated = await db.duties.update(d.id, d);
-		if (!updated) {
-			const copy = { ...d };
-			delete copy.id;
-			d.id = await db.duties.add(copy);
-		}
+	// Save
+	if (editingId) {
+		await db.duties.update(editingId, d);
+		toast("Duty updated", "success");
 	} else {
 		d.id = await db.duties.add(d);
+		toast("Duty saved", "success");
 	}
 
-	selectedId = d.id;
-	await renderAll();
-	toast("Duty saved", "success");
-	selectedId = null;
+	// Reset edit mode
+	editingId = null;
+	setSaveLabel();
 	form.reset();
 	updateStandbyVisibility();
+
+	// Select the new/updated row and re-render
+	selectedId = d.id || selectedId;
+	await renderAll();
 }
 async function deleteSelected() {
 	if (!selectedId) return;
 	if (!confirm("Delete selected duty?")) return;
 	await db.duties.delete(selectedId);
 	selectedId = null;
-	form.reset();
+	editingId = null;
+	setSaveLabel();
 	await renderAll();
 	toast("Duty deleted", "warn");
 }
@@ -227,12 +281,41 @@ async function clearAll() {
 	if (!confirm("This will clear all local data. Continue?")) return;
 	await db.duties.clear();
 	selectedId = null;
+	editingId = null;
+	setSaveLabel();
 	form.reset();
+	updateStandbyVisibility();
 	await renderAll();
 	toast("All data cleared", "bad");
 }
 
-/* ---------------- Render ---------------- */
+/* ---------------- Edit flow ---------------- */
+async function startEdit() {
+	if (!selectedId) {
+		toast("Select a duty to edit", "warn");
+		return;
+	}
+	const d = await db.duties.get(selectedId);
+	if (!d) {
+		toast("Selected duty not found", "bad");
+		return;
+	}
+	editingId = d.id;
+	dutyToForm(d);
+	setSaveLabel();
+	form?.scrollIntoView({ behavior: "smooth", block: "start" });
+	toast("Editing selected duty", "info", 1200);
+}
+function cancelEdit() {
+	if (!editingId) return;
+	editingId = null;
+	setSaveLabel();
+	form.reset();
+	updateStandbyVisibility();
+	toast("Edit cancelled", "info", 1000);
+}
+
+/* ---------------- Rendering ---------------- */
 function renderBadges(container, badges) {
 	container.innerHTML = "";
 	for (const b of badges) {
@@ -244,7 +327,7 @@ function renderBadges(container, badges) {
 }
 function renderFlagsGrouped(listEl, byMonth) {
 	listEl.innerHTML = "";
-	const months = [...byMonth.keys()].sort().reverse(); // newest first
+	const months = [...byMonth.keys()].sort().reverse();
 	if (!months.length) {
 		const li = document.createElement("li");
 		li.textContent = "No flagged items.";
@@ -253,18 +336,16 @@ function renderFlagsGrouped(listEl, byMonth) {
 	}
 	for (const ym of months) {
 		const head = document.createElement("li");
+		head.className = "month";
 		head.textContent = DateTime.fromFormat(ym, "yyyy-LL").toFormat("LLLL yyyy");
-		Object.assign(head.style, {
-			background: "transparent",
-			border: "none",
-			padding: "6px 0 0",
-			color: "var(--muted)",
-			fontWeight: "700",
-		});
 		listEl.appendChild(head);
 		for (const f of byMonth.get(ym)) {
 			const li = document.createElement("li");
-			li.innerHTML = `<strong>${f.level.toUpperCase()}:</strong> ${f.text}`;
+			li.className = `flag ${f.level}`; // warn/bad/info
+			li.setAttribute("aria-label", f.level);
+			li.innerHTML = `<span class="chip">${f.level.toUpperCase()}</span><span class="msg">${
+				f.text
+			}</span>`;
 			listEl.appendChild(li);
 		}
 	}
@@ -293,7 +374,6 @@ function renderQuickStats(boxEl, stats) {
 			}`
 		)
 	);
-	// (4) remove earliest/latest report cards
 	boxEl.appendChild(
 		make(`Common report window: ${averages.commonReportWindow || "—"}`)
 	);
@@ -307,14 +387,18 @@ function renderQuickStats(boxEl, stats) {
 	);
 	boxEl.appendChild(
 		make(`Away-nights (this month): ${counts.awayNightsThisMonth}`)
-	); // (5) no undefined now
+	);
 
 	if (standby) {
 		boxEl.appendChild(make(`Standby used: ${standby.usedPct}%`));
 		boxEl.appendChild(
 			make(
 				`Avg callout notice: ${
-					standby.avgCallNoticeMins ? toHM(standby.avgCallNoticeMins) : "—"
+					standby.avgCalloutNoticeMins
+						? toHM(standby.avgCalloutNoticeMins)
+						: standby.avgCallNoticeMins
+						? toHM(standby.avgCallNoticeMins)
+						: "—"
 				}`
 			)
 		);
@@ -327,6 +411,7 @@ function renderHistory(div, duties) {
 		return;
 	}
 
+	// Group by month
 	const groups = new Map();
 	for (const d of duties) {
 		const key = dt(d.report || d.sbStart || Date.now()).toFormat("yyyy-LL");
@@ -379,9 +464,8 @@ function renderHistory(div, duties) {
 
 			row.innerHTML = `<span>${left}</span><span>${right}</span>`;
 			row.addEventListener("click", async () => {
-				selectedId = d.id;
-				dutyToForm(d);
-				await computeAndRender();
+				selectedId = d.id; // select only
+				await computeAndRender(); // rolling windows anchor to this date
 				renderHistory(div, duties);
 			});
 			row.addEventListener("keydown", async (e) => {
@@ -392,6 +476,7 @@ function renderHistory(div, duties) {
 			});
 			wrap.appendChild(row);
 		}
+
 		div.appendChild(wrap);
 	}
 }
@@ -399,66 +484,83 @@ function renderHistory(div, duties) {
 async function computeAndRender() {
 	const duties = await getAllDutiesSorted();
 
-	let selected = selectedId ? duties.find((d) => d.id === selectedId) : null;
-	if (!selected && duties.length) {
-		selected = duties[0];
-		selectedId = selected.id;
-		dutyToForm(selected);
-	}
+	if (!selectedId && duties.length) selectedId = duties[0].id;
 
+	const selected = duties.find((d) => d.id === selectedId) || null;
 	const prev = selected
 		? duties[duties.findIndex((d) => d.id === selected.id) + 1] || null
 		: null;
 
-	// Single-duty legality & notes
+	// Context line for Duty Legality
+	if (selected) {
+		const when = dt(selected.report || selected.sbStart);
+		const kind = String(selected.dutyType || "").toUpperCase();
+		if (legalityContext)
+			legalityContext.textContent = `Selected: ${
+				when?.isValid ? when.toFormat("ccc, dd LLL yyyy HH:mm") : "—"
+			} · ${kind}`;
+	} else {
+		if (legalityContext)
+			legalityContext.textContent = "Select a duty from the log.";
+	}
+
+	// Single-duty legality
 	let combined = [];
 	if (selected) {
 		const { badges, notes } = dutyLegality(selected, prev);
 		combined.push(...badges);
-		if (notes.length) {
-			legalityNotes.style.display = "block";
-			legalityNotes.textContent = notes.join(" ");
-		} else {
+		if (legalityNotes) {
+			if (notes.length) {
+				legalityNotes.style.display = "block";
+				legalityNotes.textContent = notes.join(" ");
+			} else {
+				legalityNotes.style.display = "none";
+				legalityNotes.textContent = "";
+			}
+		}
+	} else {
+		if (legalityNotes) {
 			legalityNotes.style.display = "none";
 			legalityNotes.textContent = "";
 		}
-	} else {
-		legalityNotes.style.display = "none";
-		legalityNotes.textContent = "";
 	}
 
-	// Rolling badges (2 & 3 handled in calc.js)
-	const roll = rollingStats(duties, DateTime.local());
+	// Rolling windows anchored to selected duty date
+	const anchorRef = selected
+		? dt(selected.report || selected.sbStart)
+		: DateTime.local();
+	const roll = rollingStats(duties, anchorRef);
 	combined.push(...badgesFromRolling(roll));
 	renderBadges(legalityBadges, combined);
 
-	// Flagged items (6) — group by month, show up to last 12 months
+	// Flags — compute per item’s own day (accurate historical feed)
 	const oldest = DateTime.local().minus({ months: 12 }).startOf("month");
 	const byMonth = new Map();
 	for (let i = 0; i < duties.length; i++) {
 		const d = duties[i],
-			dPrev = duties[i + 1] || null;
-		const when = dt(d.report || d.sbStart);
+			dPrev = duties[i + 1] || null,
+			when = dt(d.report || d.sbStart);
 		if (!when?.isValid || when < oldest) continue;
-		const ym = when.toFormat("yyyy-LL");
-		const group = byMonth.get(ym) || [];
-		const fs = flagsForDuty(d, dPrev, roll);
-		for (const f of fs)
-			group.push({
-				level: f.level,
-				text: `${when.toFormat("dd LLL")}: ${f.text}`,
-			});
-		if (fs.length) byMonth.set(ym, group);
+		const rollAtWhen = rollingStats(duties, when);
+		const fs = flagsForDuty(d, dPrev, rollAtWhen);
+		if (fs.length) {
+			const ym = when.toFormat("yyyy-LL");
+			const arr = byMonth.get(ym) || [];
+			for (const f of fs)
+				arr.push({
+					level: f.level,
+					text: `${when.toFormat("dd LLL")}: ${f.text}`,
+				});
+			byMonth.set(ym, arr);
+		}
 	}
 	renderFlagsGrouped(flagsFeed, byMonth);
 
-	// Quick stats & history
+	// Quick stats + History
 	renderQuickStats(quickStatsBox, quickStats(duties));
 	renderHistory(historyDiv, duties);
 	versionStamp.textContent = APP_VERSION;
 }
-
-/* ---------------- Wrapper ---------------- */
 async function renderAll() {
 	await computeAndRender();
 }
@@ -482,6 +584,7 @@ function dutiesToCSV(duties) {
 		"discretionMins",
 		"discretionReason",
 		"discretionBy",
+		"tags",
 		"notes",
 		"sbType",
 		"sbStart",
@@ -527,119 +630,18 @@ function downloadBlob(blob, filename) {
 	URL.revokeObjectURL(url);
 }
 
-/* ---------------- PDF ---------------- */
-async function exportPDF() {
-	const duties = await getAllDutiesSorted();
-	const { jsPDF } = window.jspdf;
-	const doc = new jsPDF({ orientation: "p", unit: "pt", format: "a4" });
-	const margin = 36;
-	let y = margin;
-	const line = (t, size = 11, bold = false) => {
-		doc.setFont("helvetica", bold ? "bold" : "normal");
-		doc.setFontSize(size);
-		const lines = doc.splitTextToSize(t, 522);
-		for (const L of lines) {
-			if (y > 800) {
-				doc.addPage();
-				y = margin;
-			}
-			doc.text(L, margin, y);
-			y += size + 4;
-		}
-	};
-
-	line("Safair Duty Tracker — Duty Log & Legality (OM-aligned)", 14, true);
-	line(APP_VERSION, 10);
-	line(DateTime.local().toFormat("cccc, d LLLL yyyy HH:mm"), 10);
-	y += 4;
-
-	const roll = rollingStats(duties, DateTime.local());
-	const quick = quickStats(duties);
-	line("Summary", 12, true);
-	line(
-		`Last 7d duty: ${toHM(
-			roll.mins7
-		)} (≤60h) | Avg weekly (28d): ${roll.avgWeeklyHrs28.toFixed(
-			1
-		)} h (≤50h) | Consecutive work days: ${roll.consecWorkDays}`,
-		10
-	);
-	line(
-		`Two-off-in-14: ${
-			roll.hasTwoConsecutiveOffIn14 ? "Yes" : "No"
-		} | Off days in 28: ${roll.offDaysIn28}`,
-		10
-	);
-	line(
-		`Avg duty length: ${toHM(
-			quick.averages.avgDutyLen
-		)} | Avg sectors: ${quick.averages.avgSectors.toFixed(
-			2
-		)} | Common report window: ${quick.averages.commonReportWindow || "—"}`,
-		10
-	);
-	y += 6;
-
-	if (duties.length) {
-		const sel = duties[0],
-			prev = duties[1] || null;
-		const fs = flagsForDuty(sel, prev, roll);
-		if (fs.length) {
-			line("Flagged Items (most recent duty)", 12, true);
-			for (const f of fs) line(`[${f.level.toUpperCase()}] ${f.text}`, 10);
-			y += 6;
-		}
-	}
-
-	line("Duties", 12, true);
-	line(
-		"Date  | Report → Off | Type | Sectors | FDP | Location | Disc (min) | Notes",
-		10,
-		true
-	);
-	for (const d of duties) {
-		const R = DateTime.fromISO(
-			d.report || d.sbStart || DateTime.local().toISO()
-		).toFormat("dd LLL yyyy");
-		const Rt = d.report
-			? DateTime.fromISO(d.report).toFormat("HH:mm")
-			: d.sbStart
-			? DateTime.fromISO(d.sbStart).toFormat("HH:mm")
-			: "—";
-		const Ot = d.off
-			? DateTime.fromISO(d.off).toFormat("HH:mm")
-			: d.sbEnd
-			? DateTime.fromISO(d.sbEnd).toFormat("HH:mm")
-			: "—";
-		const fdp =
-			d.report && d.off
-				? toHM(durMins(d.report, d.off))
-				: d.sbStart && d.sbEnd
-				? `SB ${toHM(durMins(d.sbStart, d.sbEnd))}`
-				: "—";
-		const row = `${R} | ${Rt} → ${Ot} | ${d.dutyType || ""} | ${
-			d.sectors || 0
-		} | ${fdp} | ${d.location || ""} | ${d.discretionMins || 0} | ${
-			d.notes || ""
-		}`;
-		line(row, 10);
-		y += 2;
-	}
-
-	doc.save(`duties-${DateTime.local().toFormat("yyyyLLdd-HHmm")}.pdf`);
-	toast("PDF generated", "info", 1600);
-}
-
 /* ---------------- Events ---------------- */
 form?.addEventListener("submit", async (e) => {
 	e.preventDefault();
 	await saveDuty();
 });
 btnDeleteDuty?.addEventListener("click", deleteSelected);
+btnEditDuty?.addEventListener("click", startEdit);
+btnCancelEdit?.addEventListener("click", (e) => {
+	e.preventDefault();
+	cancelEdit();
+});
 btnClear?.addEventListener("click", clearAll);
-
-dutyTypeSel?.addEventListener("change", updateStandbyVisibility);
-
 btnExport?.addEventListener("click", async () => {
 	const choice = prompt('Export format: type "json" or "csv"', "json");
 	if (!choice) return;
@@ -661,20 +663,30 @@ async function importJSONFile(file) {
 		await db.duties.clear();
 		for (const d of arr) await db.duties.add(d);
 	});
+	editingId = null;
 	selectedId = null;
+	setSaveLabel();
 	await renderAll();
 	toast("Imported data", "success");
 }
-btnPDF?.addEventListener("click", exportPDF);
 
-/* Keyboard: selection & delete */
+dutyTypeSel?.addEventListener("change", updateStandbyVisibility);
+
+/* Keyboard: selection, delete, edit shortcut + cancel on Esc */
 document.addEventListener("keydown", async (e) => {
-	if (
-		["INPUT", "TEXTAREA", "SELECT"].includes(
-			(e.target.tagName || "").toUpperCase()
-		)
-	)
+	const tag = (e.target.tagName || "").toUpperCase();
+	const inField = ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
+	if (!inField && e.key.toLowerCase() === "e") {
+		e.preventDefault();
+		await startEdit();
 		return;
+	}
+	if (e.key === "Escape") {
+		cancelEdit();
+		return;
+	}
+	if (inField) return;
+
 	if (e.key === "Delete") {
 		e.preventDefault();
 		await deleteSelected();
@@ -689,7 +701,6 @@ document.addEventListener("keydown", async (e) => {
 				: Math.min(duties.length - 1, idx + 1);
 		const next = duties[nextIdx];
 		selectedId = next.id;
-		dutyToForm(next);
 		await computeAndRender();
 	}
 });
@@ -698,5 +709,7 @@ document.addEventListener("keydown", async (e) => {
 window.addEventListener("load", () => {
 	versionStamp.textContent = APP_VERSION;
 	updateStandbyVisibility();
+	ensureFlagStyles();
+	setSaveLabel();
 	renderAll();
 });

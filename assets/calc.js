@@ -1,5 +1,5 @@
 // assets/calc.js
-// OM-aligned legality engine — "Always acclimatised" (Table 9-1 only).
+// OM-aligned legality + rolling windows. Assumes crew acclimatised (single table).
 const { DateTime, Interval } = luxon;
 
 /** ---------------- Config ---------------- */
@@ -8,12 +8,12 @@ export const RULES = {
 		last7Days: 7,
 		last14Days: 14,
 		last28Days: 28,
-		avgWeeklyCapHrs: 50, // ≤50 h averaged over 4 weeks (28d)
-		maxDuty7DaysHrs: 60, // ≤60 h duty in 7 days
+		avgWeeklyCapHrs: 50, // ≤50 h averaged over 28 days
+		maxDuty7DaysHrs: 60, // ≤60 h total duty in any 7 days
 	},
 };
 
-/** ---------------- Utilities ---------------- */
+/** ---------------- Utils ---------------- */
 export function dt(v) {
 	return v instanceof DateTime ? v : DateTime.fromISO(v, { zone: "local" });
 }
@@ -35,7 +35,7 @@ export function dayKey(v) {
 
 export function normalizeDuty(d) {
 	const n = { ...d };
-	if (n.id === null) delete n.id; // Dexie assigns ++id
+	if (n.id === null) delete n.id;
 	n.report = d.report ? dt(d.report).toISO() : null;
 	n.off = d.off ? dt(d.off).toISO() : null;
 	n.dutyType = d.dutyType || "FDP";
@@ -44,6 +44,7 @@ export function normalizeDuty(d) {
 	n.discretionMins = Number(d.discretionMins ?? 0);
 	n.discretionReason = d.discretionReason || "";
 	n.discretionBy = d.discretionBy || "";
+	n.tags = d.tags || "";
 	n.notes = d.notes || "";
 
 	// Standby
@@ -55,7 +56,10 @@ export function normalizeDuty(d) {
 	return n;
 }
 
-/** ---------------- OM Table 9-1 (mins) ---------------- */
+/** ---------------- OM Table 9-1 (mins) ----------------
+ * Mapping for acclimatised crews only (simplified bands; matches your PDF choice).
+ * Index by report band, then sectors 1..8.
+ */
 const T9_1 = [
 	{
 		band: [5 * 60, 6 * 60 + 59],
@@ -103,7 +107,7 @@ export function fdpLimitMins(duty) {
 	return { mins: pickBySectors(row.mins, sectors), band: row.label };
 }
 
-/** Rest minima (simple) */
+/** Rest minima (away/home; local night detection) */
 function includesLocalNight(aISO, bISO) {
 	const a = dt(aISO),
 		b = dt(bISO);
@@ -138,7 +142,7 @@ function restRequirement(prev, upc) {
 	return { minMins: 12 * 60, label: "Away, no local night ≥12h" };
 }
 
-/** Disruptive (info) */
+/** Disruptive classifier */
 export function classifyDisruptive(d) {
 	const R = dt(d.report),
 		O = dt(d.off);
@@ -150,7 +154,23 @@ export function classifyDisruptive(d) {
 	return { early, late, night, any: early || late || night };
 }
 
-/** Single duty legality */
+/** Effective standby minutes (clip to call/report if called) */
+function effectiveStandbyMins(d) {
+	if (!(d.sbStart && (d.sbEnd || d.sbCall || d.report))) return 0;
+	const S = dt(d.sbStart);
+	let E = null;
+	if (d.sbCalled) {
+		if (d.sbCall) E = dt(d.sbCall);
+		else if (d.report) E = dt(d.report);
+		else E = dt(d.sbEnd);
+	} else {
+		E = dt(d.sbEnd);
+	}
+	if (!S?.isValid || !E?.isValid || E <= S) return 0;
+	return durMins(S, E);
+}
+
+/** Single-duty legality */
 export function dutyLegality(duty, prevDuty) {
 	const badges = [],
 		notes = [];
@@ -158,9 +178,9 @@ export function dutyLegality(duty, prevDuty) {
 	const isStandby = type === "standby";
 	const hasFDP = Boolean(duty.report && duty.off);
 
-	// Standby-only day
+	// Standby-only day (no FDP)
 	if (isStandby && !duty.sbCalled && !hasFDP && duty.sbStart && duty.sbEnd) {
-		const sbM = durMins(duty.sbStart, duty.sbEnd);
+		const sbM = effectiveStandbyMins(duty); // equals full window here
 		const s = sbM > 12 * 60 ? "bad" : sbM >= 11 * 60 ? "warn" : "ok";
 		badges.push({
 			key: "standby",
@@ -186,7 +206,6 @@ export function dutyLegality(duty, prevDuty) {
 	let s = "ok";
 	if (fdpM > limit) s = "bad";
 	else if (fdpM >= limit - 30) s = "warn";
-	// (1) remove "T-9.1" mention per request
 	badges.push({
 		key: "limit",
 		status: s,
@@ -217,19 +236,22 @@ export function dutyLegality(duty, prevDuty) {
 		});
 	}
 
-	const sbM =
-		duty.sbStart && duty.sbEnd ? durMins(duty.sbStart, duty.sbEnd) : 0;
-	if (sbM > 0)
+	const sbEffM = effectiveStandbyMins(duty);
+	if (sbEffM > 0) {
+		const s2 = sbEffM > 12 * 60 ? "bad" : sbEffM >= 11 * 60 ? "warn" : "ok";
+		const called = duty.sbCalled && hasFDP;
 		badges.push({
 			key: "standby",
-			status: sbM > 12 * 60 ? "bad" : "ok",
-			text: `Standby ${toHM(sbM)} (≤12h)`,
+			status: s2,
+			text: `Standby ${called ? "(used) " : ""}${toHM(sbEffM)} (≤12h)`,
 		});
-	if (isStandby && duty.sbCalled) {
-		const sum = sbM + fdpM;
+	}
+	if (isStandby && duty.sbCalled && hasFDP) {
+		const sum = sbEffM + fdpM;
+		const s3 = sum > 20 * 60 ? "bad" : sum >= 20 * 60 - 30 ? "warn" : "ok";
 		badges.push({
 			key: "sbFdp",
-			status: sum > 20 * 60 ? "bad" : "ok",
+			status: s3,
 			text: `Standby+FDP ${toHM(sum)} (≤20h)`,
 		});
 	}
@@ -253,13 +275,9 @@ export function dutyLegality(duty, prevDuty) {
 }
 
 /** Rolling windows & quick stats */
-
-// Work day = anything except explicit "Rest"
 export function isWorkingDuty(d) {
 	return (d?.dutyType || "").toLowerCase() !== "rest";
 }
-
-// For consecutive-days logic we need to place all work (FDP or Standby) on a calendar day
 export function groupByDay(duties) {
 	const map = new Map();
 	for (const d of duties) {
@@ -272,7 +290,6 @@ export function groupByDay(duties) {
 }
 
 export function rollingStats(allDuties, ref = DateTime.local()) {
-	// sort by start time (report or sbStart)
 	const duties = [...allDuties].sort((a, b) => {
 		const A = dt(a.report || a.sbStart || 0),
 			B = dt(b.report || b.sbStart || 0);
@@ -280,7 +297,6 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 	});
 	const now = dt(ref);
 
-	// Build intervals that represent "duty time" (FDP plus standby portions)
 	function intervalsOf(d) {
 		const intervals = [];
 		// FDP
@@ -290,17 +306,17 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 			if (R.isValid && O.isValid && O > R) intervals.push({ s: R, e: O });
 		}
 		// Standby (clip to call or report if called)
-		if (d.sbStart && d.sbEnd) {
-			const S = dt(d.sbStart),
+		if (d.sbStart && (d.sbEnd || d.sbCall || d.report)) {
+			const S = dt(d.sbStart);
+			let E = null;
+			if (d.sbCalled) {
+				if (d.sbCall) E = dt(d.sbCall);
+				else if (d.report) E = dt(d.report);
+				else E = dt(d.sbEnd);
+			} else {
 				E = dt(d.sbEnd);
-			if (S?.isValid && E?.isValid) {
-				let sbEndEff = E;
-				if (d.sbCalled) {
-					if (d.sbCall) sbEndEff = dt(d.sbCall);
-					else if (d.report) sbEndEff = dt(d.report);
-				}
-				if (sbEndEff > S) intervals.push({ s: S, e: sbEndEff });
 			}
+			if (S?.isValid && E?.isValid && E > S) intervals.push({ s: S, e: E });
 		}
 		return intervals;
 	}
@@ -321,11 +337,11 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 		return minutes;
 	}
 
-	const mins7 = sumWindow(RULES.windows.last7Days); // (2) includes standby now
+	const mins7 = sumWindow(RULES.windows.last7Days);
 	const mins28 = sumWindow(RULES.windows.last28Days);
 	const avgWeeklyHrs28 = mins28 / 4 / 60;
 
-	// Consecutive work days (3) — standby counts as work
+	// Consecutive work days (standby counts)
 	const byDay = groupByDay(duties);
 	let consecWorkDays = 0;
 	for (let i = 0; i < 60; i++) {
@@ -335,7 +351,7 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 		else break;
 	}
 
-	// Off-day counts (presence based)
+	// Off-day counts
 	function countOffDays(days) {
 		let c = 0;
 		for (let i = 0; i < days; i++) {
@@ -360,7 +376,6 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 		return false;
 	})();
 
-	// Discretion count in 28d (only when a duty record has discretion mins)
 	const start28 = now.minus({ days: RULES.windows.last28Days }).startOf("day");
 	let discretionCount28 = 0;
 	for (const d of duties) {
@@ -435,135 +450,45 @@ export function badgesFromRolling(roll) {
 	return b;
 }
 
-/** Quick stats & flags */
-export function quickStats(allDuties) {
-	const duties = allDuties.filter((d) => d.report && d.off).map(normalizeDuty);
-	if (!duties.length)
-		return {
-			averages: { avgDutyLen: 0, avgSectors: 0, commonReportWindow: null },
-			counts: {
-				disruptiveThisMonth: 0,
-				withDiscretion: 0,
-				airportStandbyCalls: 0,
-				awayNightsThisMonth: 0,
-			},
-			standby: { usedPct: 0, avgCallNoticeMins: 0 },
-		};
-
-	let totalLen = 0,
-		totalSectors = 0;
-	const hourBins = new Map();
-	for (const d of duties) {
-		totalLen += durMins(d.report, d.off);
-		totalSectors += Number(d.sectors || 0);
-		const h = dt(d.report).hour;
-		hourBins.set(h, (hourBins.get(h) || 0) + 1);
-	}
-	const avgDutyLen = totalLen / duties.length;
-	const avgSectors = totalSectors / duties.length;
-	let topHour = null,
-		topCount = -1;
-	for (const [h, c] of hourBins.entries())
-		if (c > topCount) {
-			topCount = c;
-			topHour = h;
-		}
-	const commonReportWindow =
-		topHour != null
-			? `${String(topHour).padStart(2, "0")}:00–${String(
-					(topHour + 1) % 24
-			  ).padStart(2, "0")}:00`
-			: null;
-
-	const now = DateTime.local(),
-		startOfMonth = now.startOf("month"),
-		endOfMonth = now.endOf("month");
-	const inMonth = (d) =>
-		dt(d.report) >= startOfMonth && dt(d.report) <= endOfMonth;
-
-	let disruptiveThisMonth = 0,
-		withDiscretion = 0,
-		airportStandbyCalls = 0,
-		awayNightsThisMonth = 0;
-	let standbyTotalDays = 0,
-		standbyUsedDays = 0,
-		callNoticeSum = 0,
-		callNoticeCount = 0;
-
-	for (const d of allDuties) {
-		const type = String(d.dutyType || "").toLowerCase();
-
-		if (type.includes("standby")) {
-			standbyTotalDays++;
-			if (d.sbCalled) {
-				standbyUsedDays++;
-				if (d.sbCall && d.report) {
-					callNoticeSum += Math.max(0, durMins(d.sbCall, d.report));
-					callNoticeCount++;
-				}
-			}
-		}
-
-		if (d.report && d.off) {
-			if (inMonth(d)) {
-				if (classifyDisruptive(d).any) disruptiveThisMonth++;
-				if (Number(d.discretionMins || 0) > 0) withDiscretion++;
-				if (String(d.location || "").toLowerCase() === "away") {
-					const R = dt(d.report),
-						O = dt(d.off);
-					if (R.startOf("day").toISODate() !== O.startOf("day").toISODate())
-						awayNightsThisMonth++;
-				}
-			}
-		}
-	}
-
-	return {
-		averages: { avgDutyLen, avgSectors, commonReportWindow },
-		counts: {
-			disruptiveThisMonth,
-			withDiscretion,
-			airportStandbyCalls,
-			awayNightsThisMonth,
-		}, // (5) always present
-		standby: {
-			usedPct: standbyTotalDays
-				? Math.round((standbyUsedDays / standbyTotalDays) * 100)
-				: 0,
-			avgCallNoticeMins: callNoticeCount
-				? Math.round(callNoticeSum / callNoticeCount)
-				: 0,
-		},
-	};
-}
-
+/** Flags — mirror badge WARN/BAD (plus info) */
 export function flagsForDuty(duty, prevDuty, roll) {
 	const flags = [];
 	const type = String(duty.dutyType || "").toLowerCase();
 	const isStandby = type === "standby";
 	const hasFDP = Boolean(duty.report && duty.off);
 
+	// Standby-only
 	if (isStandby && !duty.sbCalled && !hasFDP) {
-		const sbM =
-			duty.sbStart && duty.sbEnd ? durMins(duty.sbStart, duty.sbEnd) : 0;
+		const sbM = effectiveStandbyMins(duty);
 		if (sbM > 12 * 60)
 			flags.push({ level: "bad", text: `Standby ${toHM(sbM)} exceeds 12h.` });
+		else if (sbM >= 11 * 60)
+			flags.push({
+				level: "warn",
+				text: `Standby ${toHM(sbM)} within 1h of 12h cap.`,
+			});
 		return flags;
 	}
 
-	const { mins: lim } = fdpLimitMins(duty);
-	const fdp = durMins(duty.report, duty.off);
-	if (fdp > lim)
-		flags.push({
-			level: "bad",
-			text: `FDP ${toHM(fdp)} exceeds OM limit ${toHM(lim)}.`,
-		});
-	else if (fdp >= lim - 30)
-		flags.push({
-			level: "warn",
-			text: `FDP within 30 min of OM limit (${toHM(fdp)}/${toHM(lim)}).`,
-		});
+	// FDP & sectors
+	if (hasFDP) {
+		const { mins: lim } = fdpLimitMins(duty);
+		const fdp = durMins(duty.report, duty.off);
+		if (fdp > lim)
+			flags.push({
+				level: "bad",
+				text: `FDP ${toHM(fdp)} exceeds limit ${toHM(lim)}.`,
+			});
+		else if (fdp >= lim - 30)
+			flags.push({
+				level: "warn",
+				text: `FDP within 30 min of limit (${toHM(fdp)}/${toHM(lim)}).`,
+			});
+		if (Number(duty.sectors || 0) <= 0)
+			flags.push({ level: "warn", text: "FDP recorded with 0 sectors." });
+	}
 
+	// Rest
 	if (hasFDP && prevDuty?.off) {
 		const restM = durMins(prevDuty.off, duty.report);
 		const req = restRequirement(prevDuty, duty);
@@ -574,30 +499,81 @@ export function flagsForDuty(duty, prevDuty, roll) {
 			});
 	}
 
-	const sbM =
-		duty.sbStart && duty.sbEnd ? durMins(duty.sbStart, duty.sbEnd) : 0;
-	if (sbM > 12 * 60)
-		flags.push({ level: "bad", text: `Standby ${toHM(sbM)} exceeds 12h.` });
-	if (isStandby && duty.sbCalled) {
-		const sum = sbM + fdp;
+	// Standby attachments
+	const sbEffM = effectiveStandbyMins(duty);
+	if (sbEffM > 12 * 60)
+		flags.push({ level: "bad", text: `Standby ${toHM(sbEffM)} exceeds 12h.` });
+	else if (sbEffM >= 11 * 60)
+		flags.push({
+			level: "warn",
+			text: `Standby ${toHM(sbEffM)} within 1h of 12h cap.`,
+		});
+	if (isStandby && duty.sbCalled && hasFDP) {
+		const sum = sbEffM + durMins(duty.report, duty.off);
 		if (sum > 20 * 60)
 			flags.push({
 				level: "bad",
 				text: `Standby+FDP ${toHM(sum)} exceeds 20h.`,
 			});
+		else if (sum >= 20 * 60 - 30)
+			flags.push({
+				level: "warn",
+				text: `Standby+FDP within 30 min of 20h cap (${toHM(sum)}).`,
+			});
 	}
 
-	if (!roll.hasTwoConsecutiveOffIn14)
-		flags.push({
-			level: "warn",
-			text: "No ≥2 consecutive off days in last 14.",
-		});
-	if (!roll.meetsSixOffIn28)
-		flags.push({
-			level: "warn",
-			text: `Only ${roll.offDaysIn28} off days in last 28.`,
-		});
+	// Rolling mirrors
+	if (roll) {
+		if (roll.mins7 > RULES.windows.maxDuty7DaysHrs * 60)
+			flags.push({
+				level: "bad",
+				text: `Last 7d duty ${toHM(roll.mins7)} > ${
+					RULES.windows.maxDuty7DaysHrs
+				}h.`,
+			});
+		else if (roll.mins7 >= RULES.windows.maxDuty7DaysHrs * 60 - 60)
+			flags.push({
+				level: "warn",
+				text: `Last 7d duty within 60 min of ${RULES.windows.maxDuty7DaysHrs}h.`,
+			});
 
+		if (roll.avgWeeklyHrs28 > RULES.windows.avgWeeklyCapHrs)
+			flags.push({
+				level: "bad",
+				text: `Avg weekly (28d) ${roll.avgWeeklyHrs28.toFixed(1)}h > 50h.`,
+			});
+		else if (roll.avgWeeklyHrs28 > RULES.windows.avgWeeklyCapHrs - 2)
+			flags.push({
+				level: "warn",
+				text: `Avg weekly (28d) approaching 50h (${roll.avgWeeklyHrs28.toFixed(
+					1
+				)}h).`,
+			});
+
+		if (roll.consecWorkDays >= 7)
+			flags.push({
+				level: "bad",
+				text: `${roll.consecWorkDays} consecutive work days (≥7).`,
+			});
+		else if (roll.consecWorkDays >= 6)
+			flags.push({
+				level: "warn",
+				text: `${roll.consecWorkDays} consecutive work days (≥6).`,
+			});
+
+		if (!roll.hasTwoConsecutiveOffIn14)
+			flags.push({
+				level: "warn",
+				text: "No ≥2 consecutive off days in last 14.",
+			});
+		if (!roll.meetsSixOffIn28)
+			flags.push({
+				level: "warn",
+				text: `Only ${roll.offDaysIn28} off days in last 28.`,
+			});
+	}
+
+	// Info
 	if (classifyDisruptive(duty).any)
 		flags.push({ level: "info", text: "Disruptive duty (early/night/late)." });
 	if (Number(duty.discretionMins || 0) > 0)
@@ -608,4 +584,110 @@ export function flagsForDuty(duty, prevDuty, roll) {
 			}).`,
 		});
 	return flags;
+}
+
+/** Quick stats (lightweight) */
+export function quickStats(all) {
+	const d = [...all];
+	if (!d.length)
+		return {
+			averages: { avgDutyLen: 0, avgSectors: 0, commonReportWindow: "" },
+			counts: {
+				disruptiveThisMonth: 0,
+				withDiscretion: 0,
+				airportStandbyCalls: 0,
+				awayNightsThisMonth: 0,
+			},
+			standby: { usedPct: 0, avgCalloutNoticeMins: 0 },
+		};
+
+	let totalMins = 0,
+		totalDuties = 0,
+		totalSectors = 0;
+	const windows = [];
+	const now = DateTime.local();
+	const thisMonthStart = now.startOf("month");
+	let disruptiveThisMonth = 0,
+		withDiscretion = 0,
+		airportStandbyCalls = 0,
+		awayNightsThisMonth = 0;
+	let sbDays = 0,
+		sbUsed = 0,
+		callNoticeMins = [];
+
+	for (const x of d) {
+		const R = dt(x.report),
+			O = dt(x.off),
+			S = dt(x.sbStart),
+			E = dt(x.sbEnd);
+		// Duty length for averages: prefer FDP, fall back to standby-only
+		if (R?.isValid && O?.isValid) {
+			totalMins += durMins(R, O);
+			totalDuties++;
+		} else if (S?.isValid && E?.isValid) {
+			totalMins += durMins(S, E);
+			totalDuties++;
+		}
+		totalSectors += Number(x.sectors || 0);
+
+		if (R?.isValid) windows.push(R.hour);
+		if ((x.discretionMins || 0) > 0) withDiscretion++;
+
+		// Month-specific counts
+		if (R?.isValid && R >= thisMonthStart) {
+			if (
+				R.hour < 7 ||
+				(O?.isValid && O.hour >= 23) ||
+				R.hour >= 22 ||
+				(O?.isValid && O.hour >= 22)
+			)
+				disruptiveThisMonth++;
+			if (String(x.location || "").toLowerCase() === "away")
+				awayNightsThisMonth++;
+		}
+
+		// Standby stats
+		if (S?.isValid && E?.isValid) {
+			sbDays++;
+			if (x.sbCalled) sbUsed++;
+			if (x.sbCalled && x.sbCall) {
+				const call = dt(x.sbCall);
+				if (call?.isValid && call > S) callNoticeMins.push(durMins(S, call));
+			}
+			if (String(x.sbType || "").toLowerCase() === "airport" && x.sbCalled)
+				airportStandbyCalls++;
+		}
+	}
+
+	const commonReportWindow = (() => {
+		if (!windows.length) return "";
+		const buckets = new Array(24).fill(0);
+		for (const h of windows) buckets[h]++;
+		const best = buckets.map((v, i) => ({ v, i })).sort((a, b) => b.v - a.v)[0];
+		if (!best || best.v === 0) return "";
+		const h = String(best.i).padStart(2, "0");
+		return `${h}:00–${String((best.i + 1) % 24).padStart(2, "0")}:00`;
+	})();
+
+	const averages = {
+		avgDutyLen: totalDuties ? Math.round(totalMins / totalDuties) : 0,
+		avgSectors: totalDuties ? totalSectors / totalDuties : 0,
+		commonReportWindow,
+	};
+	const counts = {
+		disruptiveThisMonth,
+		withDiscretion,
+		airportStandbyCalls,
+		awayNightsThisMonth,
+	};
+	const standby = {
+		usedPct: sbDays ? Math.round((sbUsed * 100) / sbDays) : 0,
+		avgCalloutNoticeMins: callNoticeMins.length
+			? Math.round(
+					callNoticeMins.reduce((a, b) => a + b, 0) / callNoticeMins.length
+			  )
+			: 0,
+	};
+
+	return { averages, counts, standby };
 }
