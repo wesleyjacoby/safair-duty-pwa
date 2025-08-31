@@ -15,15 +15,15 @@ import {
 const { DateTime } = luxon;
 
 /* ---------------- Version ---------------- */
-const APP_VERSION = "v1.0.1";
+const APP_VERSION = "v1.0.2";
 
 /* ---------------- Dexie ---------------- */
 const db = new Dexie("safair-duty-db");
 db.version(2).stores({ duties: "++id, report, off, dutyType, location" });
 
 /* ---------------- State/els ---------------- */
-let selectedId = null; // currently selected in Duty Log
-let editingId = null; // id being edited (null => creating)
+let selectedId = null;
+let editingId = null;
 
 const el = (id) => document.getElementById(id);
 
@@ -43,8 +43,8 @@ const versionStamp = el("versionStamp");
 
 const form = el("dutyForm");
 const btnDeleteDuty = el("btnDeleteDuty");
-const btnEditDuty = el("btnEditDuty"); // <-- wire this
-const btnCancelEdit = el("btnCancelEdit"); // optional button in HTML
+const btnEditDuty = el("btnEditDuty");
+const btnCancelEdit = el("btnCancelEdit");
 const dutyTypeSel = el("dutyType");
 const sbSection = el("sbSection");
 const sbCalled = el("sbCalled");
@@ -108,41 +108,35 @@ function toast(msg, type = "info", ms = 2000) {
 	}, ms);
 }
 
-/* ---------------- Injected CSS for Flag list (light + dark tuned; accent removed) ---------------- */
+/* ---------------- Injected CSS for Flag list ---------------- */
 function ensureFlagStyles() {
 	if (document.getElementById("flagStyles")) return;
 	const s = document.createElement("style");
 	s.id = "flagStyles";
 	s.textContent = `
     #flagsFeed { list-style: none; padding: 0; margin: 0; }
-    #flagsFeed li { margin: 6px 0; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--surface-3, #e6e6e6); background: var(--surface-1, #fff); color: inherit; }
-    #flagsFeed li.month { background: transparent; border: none; padding: 6px 0 0; color: var(--muted, #6b7280); font-weight: 700; }
+    #flagsFeed li { margin: 6px 0; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--bd); background: var(--panel); color: inherit; }
+    #flagsFeed li.month { background: transparent; border: none; padding: 6px 0 0; color: var(--muted); font-weight: 700; }
     #flagsFeed li.flag { display: flex; gap: 10px; align-items: flex-start; }
     #flagsFeed li.flag .msg { flex: 1 1 auto; }
     #flagsFeed li.flag .chip { font-size: 11px; line-height: 1; padding: 6px 8px; border-radius: 999px; border: 1px solid currentColor; }
 
-    /* -------- Light theme (default) -------- */
-    /* Warn (amber) */
-    #flagsFeed li.warn { border-color: #b26a00; background: rgba(178,106,0,0.10); }
+    /* Light */
+    #flagsFeed li.warn { border-color: #b26a00; background: rgba(178,106,0,0.10); color:#6b4800; }
     #flagsFeed li.warn .chip { color: #8a5a00; background: rgba(178,106,0,0.10); border-color: #b26a00; }
-    /* Bad (red) */
-    #flagsFeed li.bad { border-color: #c62828; background: rgba(198,40,40,0.10); }
-    #flagsFeed li.bad .chip { color: #8f1e1e; background: rgba(198,40,40,0.10); border-color: #c62828; }
-    /* Info (blue) */
-    #flagsFeed li.info { border-color: #2458e6; background: rgba(36,88,230,0.10); }
+    #flagsFeed li.bad  { border-color: #c62828; background: rgba(198,40,40,0.10); color:#662020; }
+    #flagsFeed li.bad  .chip { color: #8f1e1e; background: rgba(198,40,40,0.10); border-color: #c62828; }
+    #flagsFeed li.info { border-color: #2458e6; background: rgba(36,88,230,0.10); color:#1f3f99; }
     #flagsFeed li.info .chip { color: #1d46b3; background: rgba(36,88,230,0.10); border-color: #2458e6; }
 
-    /* -------- Dark theme -------- */
-    [data-theme="dark"] #flagsFeed li { border-color: var(--surface-3, #2f2f33); background: var(--surface-1, #111214); }
-    /* Warn */
-    [data-theme="dark"] #flagsFeed li.warn { border-color: #6b4800; background: rgba(107,72,0,0.18); }
-    [data-theme="dark"] #flagsFeed li.warn .chip { color: #ffd18a; background: rgba(107,72,0,0.18); border-color: #d7a049; }
-    /* Bad */
-    [data-theme="dark"] #flagsFeed li.bad { border-color: #662020; background: rgba(102,32,32,0.18); }
-    [data-theme="dark"] #flagsFeed li.bad .chip { color: #ff9b9b; background: rgba(102,32,32,0.18); border-color: #e36a6a; }
-    /* Info */
-    [data-theme="dark"] #flagsFeed li.info { border-color: #1f3f99; background: rgba(31,63,153,0.18); }
-    [data-theme="dark"] #flagsFeed li.info .chip { color: #9fb6ff; background: rgba(31,63,153,0.18); border-color: #6f8df4; }
+    /* Dark */
+    [data-theme="dark"] #flagsFeed li { border-color: var(--bd); background: var(--panel); }
+    [data-theme="dark"] #flagsFeed li.warn { border-color: #6b4800; background: rgba(107,72,0,0.18); color:#d7a049; }
+    [data-theme="dark"] #flagsFeed li.warn .chip { color:#ffd18a; background: rgba(107,72,0,0.18); border-color:#d7a049; }
+    [data-theme="dark"] #flagsFeed li.bad  { border-color: #662020; background: rgba(102,32,32,0.18); color:#e36a6a; }
+    [data-theme="dark"] #flagsFeed li.bad  .chip { color:#ff9b9b; background: rgba(102,32,32,0.18); border-color:#e36a6a; }
+    [data-theme="dark"] #flagsFeed li.info { border-color: #1f3f99; background: rgba(31,63,153,0.18); color:#6f8df4; }
+    [data-theme="dark"] #flagsFeed li.info .chip { color:#9fb6ff; background: rgba(31,63,153,0.18); border-color:#6f8df4; }
   `;
 	document.head.appendChild(s);
 }
@@ -163,10 +157,7 @@ function formToDuty() {
 		sectors: Number(o.sectors || 0),
 		location: o.location || "Home",
 		discretionMins: Number(o.discretionMins || 0),
-		discretionReason: o.discretionReason || "",
-		discretionBy: o.discretionBy || "",
-		tags: o.tags || "",
-		notes: o.notes || "",
+		// removed reason/by/notes from UI; schema can still store them if needed
 		sbType: o.sbType || "Home",
 		sbStart: o.sbStart || null,
 		sbEnd: o.sbEnd || null,
@@ -188,10 +179,6 @@ function dutyToForm(d) {
 	el("sectors").value = Number(n.sectors || 0);
 	el("location").value = n.location || "Home";
 	el("discretionMins").value = Number(n.discretionMins || 0);
-	el("discretionReason").value = n.discretionReason || "";
-	el("discretionBy").value = n.discretionBy || "";
-	if (el("tags")) el("tags").value = n.tags || "";
-	el("notes").value = n.notes || "";
 
 	el("sbType").value = n.sbType || "Home";
 	el("sbStart").value = n.sbStart
@@ -211,8 +198,7 @@ function safeMillis(v) {
 	return D?.isValid ? D.toMillis() : 0;
 }
 function setSaveLabel() {
-	if (!saveBtn) return;
-	saveBtn.textContent = editingId ? "Update Duty" : "Save Duty";
+	if (saveBtn) saveBtn.textContent = editingId ? "Update Duty" : "Save Duty";
 }
 
 /* ---------------- CRUD ---------------- */
@@ -341,7 +327,7 @@ function renderFlagsGrouped(listEl, byMonth) {
 		listEl.appendChild(head);
 		for (const f of byMonth.get(ym)) {
 			const li = document.createElement("li");
-			li.className = `flag ${f.level}`; // warn/bad/info
+			li.className = `flag ${f.level}`;
 			li.setAttribute("aria-label", f.level);
 			li.innerHTML = `<span class="chip">${f.level.toUpperCase()}</span><span class="msg">${
 				f.text
@@ -464,8 +450,8 @@ function renderHistory(div, duties) {
 
 			row.innerHTML = `<span>${left}</span><span>${right}</span>`;
 			row.addEventListener("click", async () => {
-				selectedId = d.id; // select only
-				await computeAndRender(); // rolling windows anchor to this date
+				selectedId = d.id;
+				await computeAndRender();
 				renderHistory(div, duties);
 			});
 			row.addEventListener("keydown", async (e) => {
@@ -533,7 +519,7 @@ async function computeAndRender() {
 	combined.push(...badgesFromRolling(roll));
 	renderBadges(legalityBadges, combined);
 
-	// Flags — compute per item’s own day (accurate historical feed)
+	// Flags by month
 	const oldest = DateTime.local().minus({ months: 12 }).startOf("month");
 	const byMonth = new Map();
 	for (let i = 0; i < duties.length; i++) {
@@ -582,10 +568,6 @@ function dutiesToCSV(duties) {
 		"sectors",
 		"location",
 		"discretionMins",
-		"discretionReason",
-		"discretionBy",
-		"tags",
-		"notes",
 		"sbType",
 		"sbStart",
 		"sbEnd",
