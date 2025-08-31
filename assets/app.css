@@ -92,7 +92,6 @@ main.container {
 	align-items: center;
 	justify-content: space-between;
 	gap: 10px;
-	padding: 8px 0;
 	margin: 10px auto calc(18px + env(safe-area-inset-bottom) / 2);
 }
 
