@@ -24,7 +24,6 @@
 	--container: 980px;
 	--shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 20px rgba(0, 0, 0, 0.06);
 }
-
 [data-theme="dark"] {
 	--bg: #0f1115;
 	--panel: #121419;
@@ -70,7 +69,7 @@ body {
 	display: flex;
 	align-items: center;
 	gap: 10px;
-	margin-top: calc(10px + env(safe-area-inset-top));
+	margin-top: calc(12px + env(safe-area-inset-top));
 	padding-top: 2px;
 	padding-bottom: 10px;
 }
@@ -92,7 +91,8 @@ main.container {
 	align-items: center;
 	justify-content: space-between;
 	gap: 10px;
-	margin: 10px auto calc(18px + env(safe-area-inset-bottom) / 2);
+	padding: 8px 0;
+	margin: 10px auto calc(24px + env(safe-area-inset-bottom));
 }
 
 /* ---- Panels -------------------------------------------------------------- */
@@ -168,11 +168,17 @@ textarea {
 	grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+/* Critical for iOS so inputs don’t overflow/overlap */
 .grid > * {
 	min-width: 0;
-} /* critical for iOS overflow */
+}
+
+/* Roomier standby card */
 .grid.roomy {
-	row-gap: 14px;
+	row-gap: 16px;
+}
+.sbcard .grid.roomy + .grid.roomy {
+	margin-top: 12px;
 }
 
 /* Responsive wrap */
@@ -181,7 +187,7 @@ textarea {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
 }
-@media (max-width: 760px) {
+@media (max-width: 840px) {
 	.grid.two,
 	.grid.three {
 		grid-template-columns: 1fr;
@@ -234,52 +240,36 @@ textarea {
 	padding: 0 8px;
 }
 
-/* ---- Switch -------------------------------------------------------------- */
-.switch {
-	position: relative;
-	display: inline-flex;
-	align-items: center;
-	gap: 8px;
+/* ---- Segmented toggle (Yes/No) ------------------------------------------ */
+.seg {
+	margin-top: 6px;
+	display: inline-grid;
+	grid-auto-flow: column;
+	gap: 0;
+	border: 1px solid var(--bd-strong);
+	border-radius: 999px;
+	overflow: hidden;
+	background: var(--panel);
 }
-.switch input {
+.seg input {
 	display: none;
 }
-.switch .slider {
-	width: 56px;
-	height: 28px;
-	border-radius: 999px;
-	position: relative;
-	background: #cbd5e1;
-	border: 1px solid var(--bd-strong);
-	transition: background 0.2s ease;
-}
-.switch .slider::after {
-	content: "";
-	position: absolute;
-	top: 2px;
-	left: 2px;
-	width: 24px;
-	height: 24px;
-	border-radius: 50%;
-	background: white;
-	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-	transition: transform 0.2s ease;
-}
-.switch input:checked + .slider {
-	background: #3b82f6;
-}
-.switch input:checked + .slider::after {
-	transform: translateX(28px);
-}
-.switch .switch-labels {
-	font-size: 12px;
+.seg label {
+	padding: 8px 14px;
+	cursor: pointer;
+	user-select: none;
 	color: var(--muted);
+	font-weight: 700;
 }
-.switch .switch-labels::after {
-	content: attr(data-off);
+.seg input:checked + label {
+	background: #3b82f6;
+	color: #fff;
 }
-.switch input:checked ~ .switch-labels::after {
-	content: attr(data-on);
+[data-theme="dark"] .seg {
+	border-color: #2d3340;
+}
+[data-theme="dark"] .seg label {
+	color: #9aa1af;
 }
 
 /* ---- Badges / Chips ------------------------------------------------------ */
@@ -327,11 +317,41 @@ textarea {
 	background: #153024;
 }
 
-/* ---- Flags feed (colors are injected in JS for warn/bad/info) ------------ */
+/* ---- Flags feed ---------------------------------------------------------- */
 #flagsFeed {
 	list-style: none;
 	margin: 0;
 	padding: 0;
+}
+
+/* ---- Month toggles (Duty Log + Flags) ----------------------------------- */
+.month-toggle {
+	all: unset;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+	color: var(--muted);
+	font-weight: 700;
+	padding: 4px 0;
+}
+.month-toggle .caret {
+	width: 0;
+	height: 0;
+	border-left: 6px solid currentColor;
+	border-top: 5px solid transparent;
+	border-bottom: 5px solid transparent;
+	transform: rotate(90deg);
+	transition: transform 0.15s ease;
+}
+.month-toggle[aria-expanded="false"] .caret {
+	transform: rotate(0deg);
+}
+.month-body {
+	margin-top: 6px;
+}
+.month-body.collapsed {
+	display: none;
 }
 
 /* ---- Helpers ------------------------------------------------------------- */

@@ -110,11 +110,15 @@
 
                     <div class="grid three roomy">
                         <label>Called out?
-                            <span class="switch">
-                                <input type="checkbox" id="sbCalled" name="sbCalled" />
-                                <span class="slider"></span>
-                                <span class="switch-labels" data-on="Yes" data-off="No"></span>
-                            </span>
+                            <!-- Segmented Yes/No control -->
+                            <div class="seg" id="sbSeg" role="group" aria-label="Called out">
+                                <input type="radio" id="sbNo" name="sbCalledSeg" value="0" />
+                                <label for="sbNo">No</label>
+                                <input type="radio" id="sbYes" name="sbCalledSeg" value="1" />
+                                <label for="sbYes">Yes</label>
+                            </div>
+                            <!-- Hidden checkbox used by JS / existing logic -->
+                            <input type="checkbox" id="sbCalled" name="sbCalled" hidden />
                         </label>
 
                         <label>Call Time (local)

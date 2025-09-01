@@ -1,4 +1,6 @@
 // assets/app.js
+// Rolling windows anchor to selected duty; months default collapsed (persisted).
+// Replaced slider with segmented Yes/No; JS keeps hidden #sbCalled in sync.
 
 import {
 	normalizeDuty,
@@ -15,7 +17,7 @@ import {
 const { DateTime } = luxon;
 
 /* ---------------- Version ---------------- */
-const APP_VERSION = "v1.0.3";
+const APP_VERSION = "v1.0.4";
 
 /* ---------------- Dexie ---------------- */
 const db = new Dexie("safair-duty-db");
@@ -24,6 +26,29 @@ db.version(2).stores({ duties: "++id, report, off, dutyType, location" });
 /* ---------------- State/els ---------------- */
 let selectedId = null;
 let editingId = null;
+
+const storageKeys = {
+	history: "collapsedMonths.history",
+	flags: "collapsedMonths.flags",
+	seeded: "collapsedMonths.seeded",
+};
+
+const collapsed = {
+	history: new Set(
+		JSON.parse(localStorage.getItem(storageKeys.history) || "[]")
+	),
+	flags: new Set(JSON.parse(localStorage.getItem(storageKeys.flags) || "[]")),
+};
+let seeded = localStorage.getItem(storageKeys.seeded) === "1";
+
+function saveCollapsed() {
+	localStorage.setItem(
+		storageKeys.history,
+		JSON.stringify([...collapsed.history])
+	);
+	localStorage.setItem(storageKeys.flags, JSON.stringify([...collapsed.flags]));
+	localStorage.setItem(storageKeys.seeded, seeded ? "1" : "0");
+}
 
 const el = (id) => document.getElementById(id);
 
@@ -47,7 +72,13 @@ const btnEditDuty = el("btnEditDuty");
 const btnCancelEdit = el("btnCancelEdit");
 const dutyTypeSel = el("dutyType");
 const sbSection = el("sbSection");
-const sbCalled = el("sbCalled");
+
+/* segmented control + hidden checkbox */
+const sbCalledChk = el("sbCalled");
+const sbSeg = el("sbSeg");
+const sbYes = el("sbYes");
+const sbNo = el("sbNo");
+
 const saveBtn = form?.querySelector('button[type="submit"]');
 
 /* ---------------- Theme ---------------- */
@@ -108,7 +139,7 @@ function toast(msg, type = "info", ms = 2000) {
 	}, ms);
 }
 
-/* ---------------- Injected CSS for Flag list ---------------- */
+/* ---------------- Flag styles (warn/bad/info) ---------------------------- */
 function ensureFlagStyles() {
 	if (document.getElementById("flagStyles")) return;
 	const s = document.createElement("style");
@@ -116,20 +147,16 @@ function ensureFlagStyles() {
 	s.textContent = `
     #flagsFeed { list-style: none; padding: 0; margin: 0; }
     #flagsFeed li { margin: 6px 0; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--bd); background: var(--panel); color: inherit; }
-    #flagsFeed li.month { background: transparent; border: none; padding: 6px 0 0; color: var(--muted); font-weight: 700; }
+    #flagsFeed li.month-row { background: transparent; border: none; padding: 0; margin: 6px 0 0; }
     #flagsFeed li.flag { display: flex; gap: 10px; align-items: flex-start; }
     #flagsFeed li.flag .msg { flex: 1 1 auto; }
     #flagsFeed li.flag .chip { font-size: 11px; line-height: 1; padding: 6px 8px; border-radius: 999px; border: 1px solid currentColor; }
-
-    /* Light */
     #flagsFeed li.warn { border-color: #b26a00; background: rgba(178,106,0,0.10); color:#6b4800; }
     #flagsFeed li.warn .chip { color: #8a5a00; background: rgba(178,106,0,0.10); border-color: #b26a00; }
     #flagsFeed li.bad  { border-color: #c62828; background: rgba(198,40,40,0.10); color:#662020; }
     #flagsFeed li.bad  .chip { color: #8f1e1e; background: rgba(198,40,40,0.10); border-color: #c62828; }
     #flagsFeed li.info { border-color: #2458e6; background: rgba(36,88,230,0.10); color:#1f3f99; }
     #flagsFeed li.info .chip { color: #1d46b3; background: rgba(36,88,230,0.10); border-color: #2458e6; }
-
-    /* Dark */
     [data-theme="dark"] #flagsFeed li { border-color: var(--bd); background: var(--panel); }
     [data-theme="dark"] #flagsFeed li.warn { border-color: #6b4800; background: rgba(107,72,0,0.18); color:#d7a049; }
     [data-theme="dark"] #flagsFeed li.warn .chip { color:#ffd18a; background: rgba(107,72,0,0.18); border-color:#d7a049; }
@@ -146,6 +173,17 @@ function updateStandbyVisibility() {
 	const isStandby = (dutyTypeSel.value || "").toLowerCase() === "standby";
 	if (sbSection) sbSection.style.display = isStandby ? "block" : "none";
 }
+/* segmented control <-> hidden checkbox sync */
+function setSbCalledUI(val) {
+	if (sbCalledChk) sbCalledChk.checked = !!val;
+	if (sbYes && sbNo) {
+		sbYes.checked = !!val;
+		sbNo.checked = !val;
+	}
+}
+sbYes?.addEventListener("change", () => setSbCalledUI(true));
+sbNo?.addEventListener("change", () => setSbCalledUI(false));
+
 function formToDuty() {
 	const f = new FormData(form);
 	const o = Object.fromEntries(f.entries());
@@ -157,11 +195,10 @@ function formToDuty() {
 		sectors: Number(o.sectors || 0),
 		location: o.location || "Home",
 		discretionMins: Number(o.discretionMins || 0),
-		// removed reason/by/notes from UI; schema can still store them if needed
 		sbType: o.sbType || "Home",
 		sbStart: o.sbStart || null,
 		sbEnd: o.sbEnd || null,
-		sbCalled: el("sbCalled")?.checked || false,
+		sbCalled: !!sbCalledChk?.checked, // use hidden checkbox (kept in sync)
 		sbCall: o.sbCall || null,
 	});
 	return d;
@@ -187,7 +224,7 @@ function dutyToForm(d) {
 	el("sbEnd").value = n.sbEnd
 		? DateTime.fromISO(n.sbEnd).toFormat("yyyy-LL-dd'T'HH:mm")
 		: "";
-	if (sbCalled) sbCalled.checked = !!n.sbCalled;
+	setSbCalledUI(!!n.sbCalled);
 	el("sbCall").value = n.sbCall
 		? DateTime.fromISO(n.sbCall).toFormat("yyyy-LL-dd'T'HH:mm")
 		: "";
@@ -216,7 +253,6 @@ async function saveDuty() {
 	const isStandby = (d.dutyType || "").toLowerCase() === "standby";
 	const hasFDP = Boolean(d.report && d.off);
 
-	// Validate
 	if (isStandby && !d.sbCalled && !hasFDP) {
 		if (!d.sbStart || !d.sbEnd) {
 			alert("Please enter Standby Window Start and End.");
@@ -234,7 +270,6 @@ async function saveDuty() {
 		}
 	}
 
-	// Save
 	if (editingId) {
 		await db.duties.update(editingId, d);
 		toast("Duty updated", "success");
@@ -243,13 +278,12 @@ async function saveDuty() {
 		toast("Duty saved", "success");
 	}
 
-	// Reset edit mode
 	editingId = null;
 	setSaveLabel();
 	form.reset();
+	setSbCalledUI(false); // reset segmented control
 	updateStandbyVisibility();
 
-	// Select the new/updated row and re-render
 	selectedId = d.id || selectedId;
 	await renderAll();
 }
@@ -270,6 +304,7 @@ async function clearAll() {
 	editingId = null;
 	setSaveLabel();
 	form.reset();
+	setSbCalledUI(false);
 	updateStandbyVisibility();
 	await renderAll();
 	toast("All data cleared", "bad");
@@ -297,11 +332,12 @@ function cancelEdit() {
 	editingId = null;
 	setSaveLabel();
 	form.reset();
+	setSbCalledUI(false);
 	updateStandbyVisibility();
 	toast("Edit cancelled", "info", 1000);
 }
 
-/* ---------------- Rendering ---------------- */
+/* ---------------- Rendering (unchanged) ---------------- */
 function renderBadges(container, badges) {
 	container.innerHTML = "";
 	for (const b of badges) {
@@ -311,9 +347,29 @@ function renderBadges(container, badges) {
 		container.appendChild(s);
 	}
 }
+function buildMonthToggle(text, ym, set, onToggle) {
+	const btn = document.createElement("button");
+	btn.className = "month-toggle";
+	btn.setAttribute("type", "button");
+	const expanded = !set.has(ym);
+	btn.setAttribute("aria-expanded", String(expanded));
+	btn.innerHTML = `<span class="caret"></span><span>${text}</span>`;
+	btn.addEventListener("click", () => {
+		if (set.has(ym)) set.delete(ym);
+		else set.add(ym);
+		saveCollapsed();
+		onToggle();
+	});
+	return btn;
+}
 function renderFlagsGrouped(listEl, byMonth) {
 	listEl.innerHTML = "";
 	const months = [...byMonth.keys()].sort().reverse();
+	if (!seeded && months.length) {
+		months.forEach((m) => collapsed.flags.add(m)); // default collapsed
+		seeded = true;
+		saveCollapsed();
+	}
 	if (!months.length) {
 		const li = document.createElement("li");
 		li.textContent = "No flagged items.";
@@ -321,10 +377,23 @@ function renderFlagsGrouped(listEl, byMonth) {
 		return;
 	}
 	for (const ym of months) {
-		const head = document.createElement("li");
-		head.className = "month";
-		head.textContent = DateTime.fromFormat(ym, "yyyy-LL").toFormat("LLLL yyyy");
-		listEl.appendChild(head);
+		const header = document.createElement("li");
+		header.className = "month-row";
+		const title = DateTime.fromFormat(ym, "yyyy-LL").toFormat("LLLL yyyy");
+		const btn = buildMonthToggle(title, ym, collapsed.flags, () =>
+			renderFlagsGrouped(listEl, byMonth)
+		);
+		header.appendChild(btn);
+		listEl.appendChild(header);
+
+		const body = document.createElement("li");
+		body.className = "month-body";
+		if (collapsed.flags.has(ym)) body.classList.add("collapsed");
+
+		const ul = document.createElement("ul");
+		ul.style.listStyle = "none";
+		ul.style.padding = "0";
+		ul.style.margin = "6px 0 0";
 		for (const f of byMonth.get(ym)) {
 			const li = document.createElement("li");
 			li.className = `flag ${f.level}`;
@@ -332,8 +401,10 @@ function renderFlagsGrouped(listEl, byMonth) {
 			li.innerHTML = `<span class="chip">${f.level.toUpperCase()}</span><span class="msg">${
 				f.text
 			}</span>`;
-			listEl.appendChild(li);
+			ul.appendChild(li);
 		}
+		body.appendChild(ul);
+		listEl.appendChild(body);
 	}
 }
 function renderQuickStats(boxEl, stats) {
@@ -397,24 +468,33 @@ function renderHistory(div, duties) {
 		return;
 	}
 
-	// Group by month
 	const groups = new Map();
 	for (const d of duties) {
 		const key = dt(d.report || d.sbStart || Date.now()).toFormat("yyyy-LL");
 		(groups.get(key) || groups.set(key, []).get(key)).push(d);
 	}
+	const months = [...groups.keys()].sort().reverse();
+	if (!seeded && months.length) {
+		months.forEach((m) => collapsed.history.add(m)); // default collapsed
+	}
 
-	for (const [ym, arr] of groups) {
+	for (const ym of months) {
 		const wrap = document.createElement("div");
-		const title = document.createElement("div");
-		title.className = "muted";
-		title.style.margin = "8px 0";
-		title.textContent = DateTime.fromFormat(ym, "yyyy-LL").toFormat(
-			"LLLL yyyy"
-		);
-		wrap.appendChild(title);
+		wrap.className = "month-wrap";
 
-		for (const d of arr) {
+		const head = document.createElement("div");
+		const title = DateTime.fromFormat(ym, "yyyy-LL").toFormat("LLLL yyyy");
+		const btn = buildMonthToggle(title, ym, collapsed.history, () =>
+			renderHistory(div, duties)
+		);
+		head.appendChild(btn);
+		wrap.appendChild(head);
+
+		const body = document.createElement("div");
+		body.className = "month-body";
+		if (collapsed.history.has(ym)) body.classList.add("collapsed");
+
+		for (const d of groups.get(ym)) {
 			const R = d.report ? dt(d.report) : dt(d.sbStart);
 			const O = d.off ? dt(d.off) : dt(d.sbEnd);
 			const row = document.createElement("div");
@@ -460,10 +540,16 @@ function renderHistory(div, duties) {
 					row.click();
 				}
 			});
-			wrap.appendChild(row);
+			body.appendChild(row);
 		}
 
+		wrap.appendChild(body);
 		div.appendChild(wrap);
+	}
+
+	if (!seeded && months.length) {
+		seeded = true;
+		saveCollapsed();
 	}
 }
 
@@ -477,7 +563,6 @@ async function computeAndRender() {
 		? duties[duties.findIndex((d) => d.id === selected.id) + 1] || null
 		: null;
 
-	// Context line for Duty Legality
 	if (selected) {
 		const when = dt(selected.report || selected.sbStart);
 		const kind = String(selected.dutyType || "").toUpperCase();
@@ -490,7 +575,6 @@ async function computeAndRender() {
 			legalityContext.textContent = "Select a duty from the log.";
 	}
 
-	// Single-duty legality
 	let combined = [];
 	if (selected) {
 		const { badges, notes } = dutyLegality(selected, prev);
@@ -511,7 +595,6 @@ async function computeAndRender() {
 		}
 	}
 
-	// Rolling windows anchored to selected duty date
 	const anchorRef = selected
 		? dt(selected.report || selected.sbStart)
 		: DateTime.local();
@@ -519,7 +602,6 @@ async function computeAndRender() {
 	combined.push(...badgesFromRolling(roll));
 	renderBadges(legalityBadges, combined);
 
-	// Flags by month
 	const oldest = DateTime.local().minus({ months: 12 }).startOf("month");
 	const byMonth = new Map();
 	for (let i = 0; i < duties.length; i++) {
@@ -542,7 +624,6 @@ async function computeAndRender() {
 	}
 	renderFlagsGrouped(flagsFeed, byMonth);
 
-	// Quick stats + History
 	renderQuickStats(quickStatsBox, quickStats(duties));
 	renderHistory(historyDiv, duties);
 	versionStamp.textContent = APP_VERSION;
@@ -693,5 +774,6 @@ window.addEventListener("load", () => {
 	updateStandbyVisibility();
 	ensureFlagStyles();
 	setSaveLabel();
+	setSbCalledUI(false); // default selection: No
 	renderAll();
 });
