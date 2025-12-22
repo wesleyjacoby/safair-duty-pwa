@@ -321,9 +321,10 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 		return intervals;
 	}
 
+	// ✅ Rolling consecutive-hours window (7 days = 168 hours), not calendar days.
 	function sumWindow(days) {
-		const start = now.minus({ days }).startOf("day");
-		const end = now.endOf("day");
+		const start = now.minus({ hours: days * 24 });
+		const end = now;
 		let minutes = 0;
 		for (const d of duties) {
 			if (!isWorkingDuty(d)) continue;
@@ -351,7 +352,7 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 		else break;
 	}
 
-	// Off-day counts
+	// Off-day counts (calendar-day based, as before)
 	function countOffDays(days) {
 		let c = 0;
 		for (let i = 0; i < days; i++) {
@@ -376,12 +377,29 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 		return false;
 	})();
 
-	const start28 = now.minus({ days: RULES.windows.last28Days }).startOf("day");
+	// ✅ Rolling 28-day (672-hour) lookback for discretion count.
+	const start28 = now.minus({ hours: RULES.windows.last28Days * 24 });
 	let discretionCount28 = 0;
 	for (const d of duties) {
 		const R = dt(d.report || d.sbStart);
 		if (R >= start28 && R <= now && Number(d.discretionMins || 0) > 0)
 			discretionCount28++;
+	}
+
+	// ✅ NEW: Off days in calendar year (YTD: 1 Jan → anchor day inclusive).
+	// We intentionally do NOT count future days in the year (unknown roster) as "off".
+	const calYear = now.year;
+	const yearStart = now.startOf("year").startOf("day");
+	const yearEnd = now.startOf("day"); // anchor day (inclusive)
+	let offDaysInYear = 0;
+	{
+		let cur = yearStart;
+		while (cur <= yearEnd) {
+			const key = cur.toFormat("yyyy-LL-dd");
+			const hadWork = (byDay.get(key) || []).some(isWorkingDuty);
+			if (!hadWork) offDaysInYear++;
+			cur = cur.plus({ days: 1 });
+		}
 	}
 
 	return {
@@ -393,6 +411,10 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 		offDaysIn28,
 		meetsSixOffIn28: offDaysIn28 >= 6,
 		discretionCount28,
+
+		// NEW fields
+		calYear,
+		offDaysInYear,
 	};
 }
 
@@ -442,6 +464,14 @@ export function badgesFromRolling(roll) {
 		status: roll.meetsSixOffIn28 ? "ok" : "warn",
 		text: `Off days in 28: ${roll.offDaysIn28}`,
 	});
+
+	// ✅ NEW pill: appears next to "Off days in 28" in the badge flow.
+	b.push({
+		key: "offYear",
+		status: "ok",
+		text: `Off days in ${roll.calYear}: ${roll.offDaysInYear}`,
+	});
+
 	b.push({
 		key: "disc28",
 		status: roll.discretionCount28 > 0 ? "warn" : "ok",
