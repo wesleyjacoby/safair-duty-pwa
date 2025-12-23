@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
     <meta charset="utf-8" />
-    <title>SACAA Duty Tracker</title>
+    <title>Duty Tracker</title>
 
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#f7f8fa" />
-    <meta name="apple-mobile-web-app-title" content="Safair Duty" />
+    <meta name="apple-mobile-web-app-title" content="Duty Tracker" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
@@ -23,7 +23,7 @@
 </head>
 <body>
     <header class="topbar container">
-        <h1>SACAA Duty Tracker</h1>
+        <h1>Duty Tracker</h1>
         <div class="sp"></div>
 
         <button id="themeBtn" class="btn ghost toggle" aria-pressed="false" type="button">Dark</button>
@@ -133,6 +133,8 @@
 
                 <div class="actions">
                     <button class="btn primary" type="submit">Save Duty</button>
+                    <button id="btnWhatIf" class="btn ghost" type="button"
+                        title="Simulate this duty (not saved)">What-if</button>
                     <button id="btnDeleteDuty" class="btn danger" type="button" title="Delete selected duty">
                         Delete Duty
                     </button>
@@ -151,6 +153,74 @@
             </div>
             <div id="legalityBadges" class="badges badges-xl"></div>
             <div id="legalityNotes" class="small muted" style="margin-top:8px; display:none;"></div>
+
+            <!-- WHAT-IF (Pro): Planning Mode (not saved) -->
+            <div id="whatIfWrap" class="whatif" style="display:none; margin-top:12px;">
+
+                <!-- Header / Preview cue -->
+                <div class="whatif-head">
+                    <span class="whatif-pill">Preview</span>
+                    <div id="whatIfContext" class="muted small">
+                        Assumes no other duties before this date.
+                    </div>
+                </div>
+
+                <!-- Planning bar -->
+                <div id="planBar" class="planbar">
+                    <div class="planbar-left">
+                        <button id="btnAddAssumption" class="btn small ghost" type="button" aria-expanded="false"
+                            aria-controls="assumptionMenu" title="Add a planning assumption">
+                            Add assumption ▾
+                        </button>
+
+                        <span id="assumptionCount" class="muted small" style="margin-left:8px;">Assumptions: 0</span>
+                    </div>
+
+                    <button id="btnClearAssumptions" class="btn small ghost" type="button"
+                        title="Clear planning assumptions">
+                        Clear
+                    </button>
+                </div>
+
+                <!-- Dropdown / popover -->
+                <div id="assumptionMenu" class="assump-menu" role="menu" aria-label="Add assumption"
+                    style="display:none;">
+                    <button class="assump-item" type="button" data-kind="work" role="menuitem">Work day</button>
+                    <button class="assump-item" type="button" data-kind="standby" role="menuitem">Standby</button>
+                    <button class="assump-item" type="button" data-kind="off" role="menuitem">Off day</button>
+                </div>
+
+                <!-- Inline editor (changes based on selection) -->
+                <div id="assumptionEditor" class="assump-editor" style="display:none;">
+                    <div class="assump-editor-head">
+                        <div id="assumptionEditorTitle" style="font-weight:700;">Add assumption</div>
+                        <div class="muted small">Applies to the days before the What-if date.</div>
+                    </div>
+
+                    <div id="assumptionEditorBody" class="grid two" style="margin-top:10px;">
+                        <!-- JS will inject fields here -->
+                    </div>
+
+                    <div class="actions" style="margin-top:10px;">
+                        <button id="btnAssumptionAdd" class="btn primary small" type="button">Add</button>
+                        <button id="btnAssumptionCancel" class="btn ghost small" type="button">Cancel</button>
+                    </div>
+                </div>
+
+                <!-- Assumptions list (dashed preview box) -->
+                <div id="assumptionListWrap" class="assump-list" style="display:none;">
+                    <div class="assump-list-head">
+                        <span class="assump-list-pill">Planning assumptions</span>
+                        <span class="muted small">Preview only — not saved.</span>
+                    </div>
+                    <ul id="assumptionList" style="margin:10px 0 0; padding-left:18px;"></ul>
+                </div>
+
+                <!-- Preview badges -->
+                <div id="whatIfBadges" class="badges" style="margin-top:10px;"></div>
+            </div>
+
+
         </section>
 
         <!-- QUICK STATS -->

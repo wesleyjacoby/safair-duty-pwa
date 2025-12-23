@@ -1,6 +1,7 @@
 // assets/app.js
 // Rolling windows anchor to selected duty; months default collapsed (persisted).
 // Replaced slider with segmented Yes/No; JS keeps hidden #sbCalled in sync.
+// Adds Planning Mode assumptions for What-if (ghost duties, in-memory only).
 
 import {
 	normalizeDuty,
@@ -14,10 +15,17 @@ import {
 	flagsForDuty,
 } from "./calc.js";
 
+import { bootProFromQuery, isPro } from "./modules/premium.js";
+import {
+	anchorForDraft,
+	prevForDraft,
+	withDraftDuty,
+} from "./modules/whatif.js";
+
 const { DateTime } = luxon;
 
 /* ---------------- Version ---------------- */
-const APP_VERSION = "v1.0.5";
+const APP_VERSION = "v1.0.6";
 
 /* ---------------- Dexie ---------------- */
 const db = new Dexie("safair-duty-db");
@@ -58,9 +66,14 @@ const btnImport = el("btnImport");
 const importFile = el("importFile");
 const btnClear = el("btnClear");
 
+const btnWhatIf = el("btnWhatIf");
+const whatIfWrap = el("whatIfWrap");
+
 const legalityBadges = el("legalityBadges");
 const legalityNotes = el("legalityNotes");
 const legalityContext = el("legalityContext");
+const whatIfBadges = el("whatIfBadges");
+const whatIfContext = el("whatIfContext");
 const quickStatsBox = el("quickStats");
 const flagsFeed = el("flagsFeed");
 const historyDiv = el("history");
@@ -80,6 +93,22 @@ const sbYes = el("sbYes");
 const sbNo = el("sbNo");
 
 const saveBtn = form?.querySelector('button[type="submit"]');
+
+/* ---------------- Planning Mode elements (optional) ---------------- */
+const planBar = el("planBar");
+const btnAddAssumption = el("btnAddAssumption");
+const btnClearAssumptions = el("btnClearAssumptions");
+const assumptionMenu = el("assumptionMenu");
+const assumptionCount = el("assumptionCount");
+
+const assumptionEditor = el("assumptionEditor");
+const assumptionEditorTitle = el("assumptionEditorTitle");
+const assumptionEditorBody = el("assumptionEditorBody");
+const btnAssumptionAdd = el("btnAssumptionAdd");
+const btnAssumptionCancel = el("btnAssumptionCancel");
+
+const assumptionListWrap = el("assumptionListWrap");
+const assumptionList = el("assumptionList");
 
 /* ---------------- Theme ---------------- */
 function isDark() {
@@ -155,8 +184,8 @@ function ensureFlagStyles() {
     #flagsFeed li.warn .chip { color: #8a5a00; background: rgba(178,106,0,0.10); border-color: #b26a00; }
     #flagsFeed li.bad  { border-color: #c62828; background: rgba(198,40,40,0.10); color:#662020; }
     #flagsFeed li.bad  .chip { color: #8f1e1e; background: rgba(198,40,40,0.10); border-color: #c62828; }
-    #flagsFeed li.info { border-color: #2458e6; background: rgba(36,88,230,0.10); color:#1f3f99; }
-    #flagsFeed li.info .chip { color: #1d46b3; background: rgba(36,88,230,0.10); border-color: #2458e6; }
+    #flagsFeed li.info { border-color: #2458e6; background: rgba(36,88,230,0,10); color:#1f3f99; }
+    #flagsFeed li.info .chip { color: #1d46b3; background: rgba(36,88,230,0,10); border-color: #2458e6; }
     [data-theme="dark"] #flagsFeed li { border-color: var(--bd); background: var(--panel); }
     [data-theme="dark"] #flagsFeed li.warn { border-color: #6b4800; background: rgba(107,72,0,0.18); color:#d7a049; }
     [data-theme="dark"] #flagsFeed li.warn .chip { color:#ffd18a; background: rgba(107,72,0,0.18); border-color:#d7a049; }
@@ -238,6 +267,218 @@ function setSaveLabel() {
 	if (saveBtn) saveBtn.textContent = editingId ? "Update Duty" : "Save Duty";
 }
 
+/* ---------------- Planning assumptions (in-memory only) ------------------ */
+
+let planning = {
+	open: false,
+	pendingKind: null, // "work" | "standby" | "off"
+	items: [], // list of assumptions
+	lastCtx: null, // { dutiesCount, ghostCount }
+};
+
+function parseHM(hm) {
+	const [h, m] = String(hm || "07:00")
+		.split(":")
+		.map((x) => Number(x || 0));
+	return { h: Math.min(23, Math.max(0, h)), m: Math.min(59, Math.max(0, m)) };
+}
+
+function nextAssumptionOffsetDays() {
+	// Day before = -1, then -2, -3 ...
+	return -(planning.items.length + 1);
+}
+
+function setMenuOpen(open) {
+	planning.open = !!open;
+	if (assumptionMenu) assumptionMenu.style.display = open ? "block" : "none";
+	if (btnAddAssumption)
+		btnAddAssumption.setAttribute("aria-expanded", String(open));
+}
+
+function hideEditor() {
+	if (assumptionEditor) assumptionEditor.style.display = "none";
+	if (assumptionEditorBody) assumptionEditorBody.innerHTML = "";
+	planning.pendingKind = null;
+}
+
+function showEditor(kind) {
+	planning.pendingKind = kind;
+
+	if (!assumptionEditor || !assumptionEditorBody || !assumptionEditorTitle)
+		return;
+
+	const offsetDays = nextAssumptionOffsetDays();
+	const dayLabel =
+		offsetDays === -1 ? "Day before" : `${Math.abs(offsetDays)} days before`;
+
+	assumptionEditorTitle.textContent =
+		kind === "work" ? "Work day" : kind === "standby" ? "Standby" : "Off day";
+
+	let html = `
+		<label>Applies to
+			<input type="text" id="assumpDay" value="${dayLabel}" disabled />
+		</label>
+	`;
+
+	if (kind === "work") {
+		html += `
+			<label>Start time
+				<input type="time" id="assumpStart" value="07:00" />
+			</label>
+			<label>Duty length (hours)
+				<input type="number" id="assumpHours" min="1" max="18" step="0.5" value="10" />
+			</label>
+			<label>Sectors
+				<input type="number" id="assumpSectors" min="0" max="8" step="1" value="2" />
+			</label>
+			<label>Location
+				<select id="assumpLocation">
+					<option>Home</option>
+					<option>Away</option>
+				</select>
+			</label>
+		`;
+	} else if (kind === "standby") {
+		html += `
+			<label>Start time
+				<input type="time" id="assumpStart" value="06:00" />
+			</label>
+			<label>Standby length (hours)
+				<input type="number" id="assumpHours" min="1" max="18" step="0.5" value="10" />
+			</label>
+			<label>Standby type
+				<select id="assumpSbType">
+					<option>Home</option>
+					<option>Airport</option>
+				</select>
+			</label>
+			<label>Location
+				<select id="assumpLocation">
+					<option>Home</option>
+					<option>Away</option>
+				</select>
+			</label>
+		`;
+	} else {
+		html += `
+			<label>Note
+				<input type="text" id="assumpNote" placeholder="Optional note" />
+			</label>
+		`;
+	}
+
+	assumptionEditorBody.innerHTML = html;
+	assumptionEditor.style.display = "block";
+}
+
+function renderAssumptionsUI() {
+	if (assumptionCount)
+		assumptionCount.textContent = `Assumptions: ${planning.items.length}`;
+
+	if (!assumptionListWrap || !assumptionList) return;
+
+	if (!planning.items.length) {
+		assumptionListWrap.style.display = "none";
+		assumptionList.innerHTML = "";
+		return;
+	}
+
+	assumptionListWrap.style.display = "block";
+	assumptionList.innerHTML = "";
+
+	for (let i = 0; i < planning.items.length; i++) {
+		const it = planning.items[i];
+		const label =
+			it.kind === "work"
+				? `Work day (${Math.abs(it.offsetDays)}d before) · ${it.startHM} for ${
+						it.hours
+				  }h · ${it.sectors} legs · ${it.location}`
+				: it.kind === "standby"
+				? `Standby (${Math.abs(it.offsetDays)}d before) · ${it.startHM} for ${
+						it.hours
+				  }h · ${it.sbType} · ${it.location}`
+				: `Off day (${Math.abs(it.offsetDays)}d before)${
+						it.note ? ` · ${it.note}` : ""
+				  }`;
+
+		const li = document.createElement("li");
+		li.innerHTML = `
+			<div class="assump-row">
+				<span>${label}</span>
+				<button type="button" class="assump-x" data-i="${i}" title="Remove">×</button>
+			</div>
+		`;
+		assumptionList.appendChild(li);
+	}
+
+	assumptionList.querySelectorAll(".assump-x").forEach((b) => {
+		b.addEventListener("click", () => {
+			const idx = Number(b.getAttribute("data-i") || -1);
+			if (idx >= 0) {
+				planning.items.splice(idx, 1);
+				renderAssumptionsUI();
+				recomputeWhatIfIfVisible();
+			}
+		});
+	});
+}
+
+function ghostDutiesForDraft(draft) {
+	const when = dt(draft.report || draft.sbStart);
+	if (!when?.isValid) return [];
+
+	const baseDay = when.startOf("day"); // draft day 00:00
+	const ghosts = [];
+
+	for (const it of planning.items) {
+		const day = baseDay.plus({ days: it.offsetDays });
+		if (it.kind === "off") continue;
+
+		const { h, m } = parseHM(it.startHM);
+		const start = day.set({ hour: h, minute: m, second: 0, millisecond: 0 });
+		const end = start.plus({ minutes: Math.round(Number(it.hours || 0) * 60) });
+
+		if (it.kind === "work") {
+			ghosts.push(
+				normalizeDuty({
+					id: `__GHOST_${Math.abs(it.offsetDays)}__`,
+					dutyType: "FDP",
+					report: start.toISO(),
+					off: end.toISO(),
+					sectors: Number(it.sectors || 0),
+					location: it.location || "Home",
+					discretionMins: 0,
+				})
+			);
+		} else if (it.kind === "standby") {
+			ghosts.push(
+				normalizeDuty({
+					id: `__GHOST_${Math.abs(it.offsetDays)}__`,
+					dutyType: "Standby",
+					report: null,
+					off: null,
+					sectors: 0,
+					location: it.location || "Home",
+					discretionMins: 0,
+					sbType: it.sbType || "Home",
+					sbStart: start.toISO(),
+					sbEnd: end.toISO(),
+					sbCalled: false,
+					sbCall: null,
+				})
+			);
+		}
+	}
+
+	return ghosts;
+}
+
+async function recomputeWhatIfIfVisible() {
+	if (!whatIfShown) return;
+	// Recompute live preview (no toggling)
+	await simulateWhatIf(true);
+}
+
 /* ---------------- CRUD ---------------- */
 async function getAllDutiesSorted() {
 	const all = await db.duties.toArray();
@@ -247,6 +488,7 @@ async function getAllDutiesSorted() {
 	);
 	return all;
 }
+
 async function saveDuty() {
 	const d = formToDuty();
 
@@ -287,6 +529,7 @@ async function saveDuty() {
 	selectedId = d.id || selectedId;
 	await renderAll();
 }
+
 async function deleteSelected() {
 	if (!selectedId) return;
 	if (!confirm("Delete selected duty?")) return;
@@ -297,6 +540,7 @@ async function deleteSelected() {
 	await renderAll();
 	toast("Duty deleted", "warn");
 }
+
 async function clearAll() {
 	if (!confirm("This will clear all local data. Continue?")) return;
 	await db.duties.clear();
@@ -327,6 +571,7 @@ async function startEdit() {
 	form?.scrollIntoView({ behavior: "smooth", block: "start" });
 	toast("Editing selected duty", "info", 1200);
 }
+
 function cancelEdit() {
 	if (!editingId) return;
 	editingId = null;
@@ -337,7 +582,88 @@ function cancelEdit() {
 	toast("Edit cancelled", "info", 1000);
 }
 
-/* ---------------- Rendering (unchanged) ---------------- */
+/* ---------------- What-if simulator (Pro) ---------------- */
+async function simulateWhatIf(recomputeOnly = false) {
+	// Normal click toggles; recomputeOnly keeps it visible and just updates badges.
+	if (whatIfShown && !recomputeOnly) {
+		hideWhatIf();
+		return;
+	}
+
+	if (!isPro()) {
+		toast("What-if is a Pro feature (subscription).", "warn", 2200);
+		return;
+	}
+
+	// Build draft duty from the current form values.
+	const draft = formToDuty();
+	delete draft.id;
+
+	const isStandby = (draft.dutyType || "").toLowerCase() === "standby";
+	const hasFDP = Boolean(draft.report && draft.off);
+
+	// Validate like Save Duty, but don't block with alerts (use toast).
+	if (isStandby && !draft.sbCalled && !hasFDP) {
+		if (!draft.sbStart || !draft.sbEnd) {
+			toast("What-if needs Standby Window Start and End.", "warn", 2400);
+			return;
+		}
+		draft.sectors = 0;
+	} else {
+		if (!draft.report || !draft.off) {
+			toast("What-if needs Sign On and Sign Off.", "warn", 2400);
+			return;
+		}
+		if (dt(draft.off) <= dt(draft.report)) {
+			toast("Sign off must be after sign on.", "warn", 2400);
+			return;
+		}
+	}
+
+	const duties = await getAllDutiesSorted();
+
+	// Add ghosts (assumptions) before draft date
+	const ghosts = ghostDutiesForDraft(draft);
+	const dutiesPlusGhosts = [...duties, ...ghosts];
+
+	// Draft inserted + sorted newest->oldest (IMPORTANT: pass dt + safeMillis)
+	const combined = withDraftDuty(dutiesPlusGhosts, draft, dt, safeMillis);
+
+	const prev = prevForDraft(combined);
+	const anchor = anchorForDraft(draft, dt);
+
+	// Compute badges (single-duty + rolling)
+	const one = dutyLegality({ ...draft }, prev);
+	const roll = rollingStats(combined, anchor);
+	const badges = [...one.badges, ...badgesFromRolling(roll)];
+
+	planning.lastCtx = { dutiesCount: duties.length, ghostCount: ghosts.length };
+
+	const when = dt(draft.report || draft.sbStart);
+	const kind = String(draft.dutyType || "").toUpperCase();
+	const ghostInfo = ghosts.length ? ` · +${ghosts.length} assumptions` : "";
+	const ctx = `What-if (not saved): ${
+		when?.isValid ? when.toFormat("ccc, dd LLL yyyy HH:mm") : "—"
+	} · ${kind}${ghostInfo}`;
+
+	showWhatIf(ctx, badges);
+
+	// Planning UI only makes sense when preview is visible
+	if (planBar) planBar.style.display = "flex";
+	renderAssumptionsUI();
+
+	// Show any single-duty notes (FDP exceed, discretion, etc.)
+	if (legalityNotes) {
+		if (one.notes?.length) {
+			legalityNotes.style.display = "block";
+			legalityNotes.textContent = one.notes.join(" ");
+		} else {
+			// Don't stomp the normal selected-duty notes; leave as-is.
+		}
+	}
+}
+
+/* ---------------- Rendering ---------------- */
 function renderBadges(container, badges) {
 	container.innerHTML = "";
 	for (const b of badges) {
@@ -347,6 +673,61 @@ function renderBadges(container, badges) {
 		container.appendChild(s);
 	}
 }
+
+let whatIfShown = false;
+
+function hideWhatIf() {
+	whatIfShown = false;
+
+	if (whatIfBadges) whatIfBadges.innerHTML = "";
+
+	if (whatIfContext) {
+		whatIfContext.textContent = "";
+		whatIfContext.style.display = "block"; // it lives in the wrapper now
+	}
+
+	if (whatIfWrap) {
+		whatIfWrap.classList.remove("ok", "warn", "bad");
+		whatIfWrap.style.display = "none";
+	}
+
+	// hide planning UI when preview hides
+	setMenuOpen(false);
+	hideEditor();
+	renderAssumptionsUI();
+	if (planBar) planBar.style.display = "none";
+
+	if (btnWhatIf) btnWhatIf.textContent = "What-if";
+}
+
+function showWhatIf(contextText, badges) {
+	whatIfShown = true;
+
+	// Render badges (keep your grid layout)
+	if (whatIfBadges) {
+		renderBadges(whatIfBadges, badges || []);
+	}
+
+	// Set context text
+	if (whatIfContext) {
+		whatIfContext.textContent = contextText || "What-if preview (not saved)";
+	}
+
+	// Determine severity for wrapper tint
+	let sev = "ok";
+	if ((badges || []).some((b) => b.status === "bad")) sev = "bad";
+	else if ((badges || []).some((b) => b.status === "warn")) sev = "warn";
+
+	if (whatIfWrap) {
+		whatIfWrap.classList.remove("ok", "warn", "bad");
+		whatIfWrap.classList.add(sev);
+		whatIfWrap.style.display = "block";
+	}
+
+	if (btnWhatIf) btnWhatIf.textContent = "Hide What-if";
+}
+
+/* ---------------- Month toggles ---------------- */
 function buildMonthToggle(text, ym, set, onToggle) {
 	const btn = document.createElement("button");
 	btn.className = "month-toggle";
@@ -362,6 +743,7 @@ function buildMonthToggle(text, ym, set, onToggle) {
 	});
 	return btn;
 }
+
 function renderFlagsGrouped(listEl, byMonth) {
 	listEl.innerHTML = "";
 	const months = [...byMonth.keys()].sort().reverse();
@@ -407,6 +789,7 @@ function renderFlagsGrouped(listEl, byMonth) {
 		listEl.appendChild(body);
 	}
 }
+
 function renderQuickStats(boxEl, stats) {
 	const { averages, counts, standby } = stats;
 	boxEl.innerHTML = "";
@@ -461,6 +844,7 @@ function renderQuickStats(boxEl, stats) {
 		);
 	}
 }
+
 function renderHistory(div, duties) {
 	div.innerHTML = "";
 	if (!duties.length) {
@@ -518,6 +902,7 @@ function renderHistory(div, duties) {
 				String(d.dutyType || "").toLowerCase() === "standby" &&
 				!d.sbCalled &&
 				!hasFDP;
+
 			const sbText =
 				d.sbStart && d.sbEnd ? `SB ${toHM(durMins(d.sbStart, d.sbEnd))}` : "—";
 			const fdpText = hasFDP ? toHM(durMins(d.report, d.off)) : sbText;
@@ -555,6 +940,8 @@ function renderHistory(div, duties) {
 
 async function computeAndRender() {
 	const duties = await getAllDutiesSorted();
+	// Avoid stale what-if results when the selection/data changes.
+	if (whatIfShown) hideWhatIf();
 
 	if (!selectedId && duties.length) selectedId = duties[0].id;
 
@@ -628,6 +1015,7 @@ async function computeAndRender() {
 	renderHistory(historyDiv, duties);
 	versionStamp.textContent = APP_VERSION;
 }
+
 async function renderAll() {
 	await computeAndRender();
 }
@@ -699,6 +1087,7 @@ form?.addEventListener("submit", async (e) => {
 	await saveDuty();
 });
 btnDeleteDuty?.addEventListener("click", deleteSelected);
+btnWhatIf?.addEventListener("click", () => simulateWhatIf(false));
 btnEditDuty?.addEventListener("click", startEdit);
 btnCancelEdit?.addEventListener("click", (e) => {
 	e.preventDefault();
@@ -735,10 +1124,87 @@ async function importJSONFile(file) {
 
 dutyTypeSel?.addEventListener("change", updateStandbyVisibility);
 
+/* Planning Mode UI events (only if HTML exists) */
+btnAddAssumption?.addEventListener("click", () => {
+	setMenuOpen(!planning.open);
+});
+
+assumptionMenu?.addEventListener("click", (e) => {
+	const btn = e.target.closest(".assump-item");
+	if (!btn) return;
+	const kind = btn.getAttribute("data-kind");
+	setMenuOpen(false);
+	showEditor(kind);
+});
+
+btnAssumptionCancel?.addEventListener("click", () => {
+	hideEditor();
+});
+
+btnAssumptionAdd?.addEventListener("click", () => {
+	if (!planning.pendingKind) return;
+
+	const offsetDays = nextAssumptionOffsetDays();
+
+	if (planning.pendingKind === "work") {
+		const startHM = el("assumpStart")?.value || "07:00";
+		const hours = Number(el("assumpHours")?.value || 10);
+		const sectors = Number(el("assumpSectors")?.value || 2);
+		const location = el("assumpLocation")?.value || "Home";
+
+		planning.items.push({
+			kind: "work",
+			offsetDays,
+			startHM,
+			hours,
+			sectors,
+			location,
+		});
+	} else if (planning.pendingKind === "standby") {
+		const startHM = el("assumpStart")?.value || "06:00";
+		const hours = Number(el("assumpHours")?.value || 10);
+		const sbType = el("assumpSbType")?.value || "Home";
+		const location = el("assumpLocation")?.value || "Home";
+
+		planning.items.push({
+			kind: "standby",
+			offsetDays,
+			startHM,
+			hours,
+			sbType,
+			location,
+		});
+	} else {
+		const note = el("assumpNote")?.value || "";
+		planning.items.push({ kind: "off", offsetDays, note });
+	}
+
+	hideEditor();
+	renderAssumptionsUI();
+	recomputeWhatIfIfVisible();
+});
+
+btnClearAssumptions?.addEventListener("click", () => {
+	planning.items = [];
+	hideEditor();
+	setMenuOpen(false);
+	renderAssumptionsUI();
+	recomputeWhatIfIfVisible();
+});
+
+// Close dropdown on outside click
+document.addEventListener("click", (e) => {
+	if (!planning.open) return;
+	const inBtn = btnAddAssumption && btnAddAssumption.contains(e.target);
+	const inMenu = assumptionMenu && assumptionMenu.contains(e.target);
+	if (!inBtn && !inMenu) setMenuOpen(false);
+});
+
 /* Keyboard: selection, delete, edit shortcut + cancel on Esc */
 document.addEventListener("keydown", async (e) => {
 	const tag = (e.target.tagName || "").toUpperCase();
 	const inField = ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
+
 	if (!inField && e.key.toLowerCase() === "e") {
 		e.preventDefault();
 		await startEdit();
@@ -770,10 +1236,14 @@ document.addEventListener("keydown", async (e) => {
 
 /* ---------------- Boot ---------------- */
 window.addEventListener("load", () => {
+	bootProFromQuery();
 	versionStamp.textContent = APP_VERSION;
 	updateStandbyVisibility();
 	ensureFlagStyles();
 	setSaveLabel();
 	setSbCalledUI(false); // default selection: No
+	hideWhatIf();
+	renderAssumptionsUI(); // initialize if planning UI exists
+	if (planBar) planBar.style.display = "none";
 	renderAll();
 });
