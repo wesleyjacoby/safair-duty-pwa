@@ -1,5 +1,15 @@
 // assets/calc.js
 // OM-aligned legality + rolling windows. Assumes crew acclimatised (single table).
+// Updates:
+// - Removed "Rest" as a duty type (off days are implied by no entries)
+// - Added Flight Watch / Home Reserve / Sick
+//   * Flight Watch + Home Reserve: do not count toward duty limits / rolling totals
+//   * Sick: does not count toward limits AND does not count as an OFF day
+// - Implemented SA-CATS style trigger:
+//   * Following 50h cumulative (counted) duty in rolling 7 days (excluding FW/HR, Sick),
+//     require >=24 consecutive hours rest before commencing further counted duties.
+//   * We flag (do not enforce).
+
 const { DateTime, Interval } = luxon;
 
 /** ---------------- Config ---------------- */
@@ -8,10 +18,60 @@ export const RULES = {
 		last7Days: 7,
 		last14Days: 14,
 		last28Days: 28,
-		avgWeeklyCapHrs: 50, // ≤50 h averaged over 28 days
-		maxDuty7DaysHrs: 60, // ≤60 h total duty in any 7 days
+
+		// SA-CATS trigger (as per your pasted rule):
+		flightDutyTrigger7DaysHrs: 50,
+		requiredRestAfterTriggerHrs: 24,
+
+		// Existing OM-style 28d average cap
+		avgWeeklyCapHrs: 50, // ≤50 h averaged over 28 days (operator scheme)
 	},
 };
+
+/** ---------------- Duty type helpers ---------------- */
+function normType(t) {
+	return String(t || "")
+		.trim()
+		.toLowerCase();
+}
+
+// Duty types that exist but must NOT count toward any duty limits.
+function isNonCountingType(type) {
+	const t = normType(type);
+	return (
+		t === "flight watch" ||
+		t === "flightwatch" ||
+		t === "home reserve" ||
+		t === "homereserve" ||
+		t === "reserve" || // if you ever shorten it
+		t === "sick"
+	);
+}
+
+// Sick is NOT duty, but also NOT an OFF day.
+// OFF day is ONLY "no entries at all for that calendar day".
+function isSickType(type) {
+	return normType(type) === "sick";
+}
+
+// Count toward rolling duty totals / limits?
+export function countsTowardLimits(d) {
+	if (!d) return false;
+	if (isNonCountingType(d.dutyType)) return false;
+	// Everything else (FDP, Standby, Ground, Training, Office, Positioning) counts.
+	return true;
+}
+
+// Considered a "work-like day" for consecutive-work-day streaks?
+// I treat FW/HR as a work-like duty day (you are scheduled), but Sick is not.
+// (You can change this easily later if you want FW/HR not to count as "work days".)
+export function isWorkingDuty(d) {
+	if (!d) return false;
+	if (isSickType(d.dutyType)) return false;
+	// Any scheduled duty type counts as "work-like"
+	// (including Flight Watch / Home Reserve / Standby etc.)
+	return true;
+}
 
 /** ---------------- Utils ---------------- */
 export function dt(v) {
@@ -36,14 +96,18 @@ export function dayKey(v) {
 export function normalizeDuty(d) {
 	const n = { ...d };
 	if (n.id === null) delete n.id;
+
 	n.report = d.report ? dt(d.report).toISO() : null;
 	n.off = d.off ? dt(d.off).toISO() : null;
+
 	n.dutyType = d.dutyType || "FDP";
 	n.sectors = Number(d.sectors ?? 0);
 	n.location = d.location || "Home";
+
 	n.discretionMins = Number(d.discretionMins ?? 0);
 	n.discretionReason = d.discretionReason || "";
 	n.discretionBy = d.discretionBy || "";
+
 	n.tags = d.tags || "";
 	n.notes = d.notes || "";
 
@@ -53,11 +117,12 @@ export function normalizeDuty(d) {
 	n.sbEnd = d.sbEnd ? dt(d.sbEnd).toISO() : null;
 	n.sbCalled = Boolean(d.sbCalled);
 	n.sbCall = d.sbCall ? dt(d.sbCall).toISO() : null;
+
 	return n;
 }
 
 /** ---------------- OM Table 9-1 (mins) ----------------
- * Mapping for acclimatised crews only (simplified bands; matches your PDF choice).
+ * Mapping for acclimatised crews only (simplified bands).
  * Index by report band, then sectors 1..8.
  */
 const T9_1 = [
@@ -92,6 +157,7 @@ const T9_1 = [
 		label: "22:00–04:59",
 	},
 ];
+
 function timeBandContains(t, [a, b]) {
 	return a <= b ? t >= a && t <= b : t >= a || t <= b;
 }
@@ -112,6 +178,7 @@ function includesLocalNight(aISO, bISO) {
 	const a = dt(aISO),
 		b = dt(bISO);
 	if (!a?.isValid || !b?.isValid) return false;
+
 	const mkNight = (anchor) =>
 		Interval.fromDateTimes(
 			anchor.set({ hour: 22, minute: 0, second: 0, millisecond: 0 }),
@@ -119,26 +186,36 @@ function includesLocalNight(aISO, bISO) {
 				.plus({ days: 1 })
 				.set({ hour: 6, minute: 0, second: 0, millisecond: 0 })
 		);
+
 	const rest = Interval.fromDateTimes(a, b);
 	return (
 		rest.overlaps(mkNight(a.startOf("day"))) ||
 		rest.overlaps(mkNight(b.startOf("day")))
 	);
 }
+
 function restRequirement(prev, upc) {
 	if (!prev) return { minMins: 0, label: "—" };
+
 	const away = String(upc.location || "").toLowerCase() === "away";
 	if (!away) return { minMins: 12 * 60, label: "Home base ≥12h" };
+
+	// Away base
 	if (includesLocalNight(prev.off, upc.report))
 		return { minMins: 10 * 60, label: "Away incl. local night ≥10h" };
+
 	const po = dt(prev.off),
 		r = dt(upc.report);
+
+	// crude "outside local night" heuristic
 	const outside =
 		po.hour >= 6 &&
 		r.hour <= 22 &&
 		po.startOf("day").toISODate() === r.startOf("day").toISODate();
+
 	if (outside)
 		return { minMins: 14 * 60, label: "Away outside local night ≥14h" };
+
 	return { minMins: 12 * 60, label: "Away, no local night ≥12h" };
 }
 
@@ -148,17 +225,21 @@ export function classifyDisruptive(d) {
 		O = dt(d.off);
 	if (!R.isValid || !O.isValid)
 		return { early: false, late: false, night: false, any: false };
+
 	const early = R.hour < 7,
 		late = O.hour >= 23,
 		night = R.hour >= 22 || R.hour < 6 || O.hour >= 22 || O.hour < 6;
+
 	return { early, late, night, any: early || late || night };
 }
 
 /** Effective standby minutes (clip to call/report if called) */
 function effectiveStandbyMins(d) {
 	if (!(d.sbStart && (d.sbEnd || d.sbCall || d.report))) return 0;
+
 	const S = dt(d.sbStart);
 	let E = null;
+
 	if (d.sbCalled) {
 		if (d.sbCall) E = dt(d.sbCall);
 		else if (d.report) E = dt(d.report);
@@ -166,22 +247,62 @@ function effectiveStandbyMins(d) {
 	} else {
 		E = dt(d.sbEnd);
 	}
+
 	if (!S?.isValid || !E?.isValid || E <= S) return 0;
 	return durMins(S, E);
+}
+
+/** Duty start/end helpers (for trigger rest checks) */
+function dutyStartISO(d) {
+	if (!d) return null;
+	return d.report || d.sbStart || null;
+}
+function dutyEndISO(d) {
+	if (!d) return null;
+	// Prefer FDP sign-off
+	if (d.off) return d.off;
+	// Standby window end
+	if (d.sbEnd) return d.sbEnd;
+	// If called but no sbEnd, use call time/report
+	if (d.sbCall) return d.sbCall;
+	if (d.report) return d.report;
+	return null;
 }
 
 /** Single-duty legality */
 export function dutyLegality(duty, prevDuty) {
 	const badges = [],
 		notes = [];
-	const type = String(duty.dutyType || "").toLowerCase();
+
+	const type = normType(duty.dutyType);
 	const isStandby = type === "standby";
 	const hasFDP = Boolean(duty.report && duty.off);
+
+	// Non-counting "duty" types (FW/HR/Sick) — no FDP logic
+	if (isNonCountingType(type) && !isStandby) {
+		// If user logs times, show it; otherwise show a neutral badge set.
+		const R = dt(duty.report);
+		const O = dt(duty.off);
+		const len = R.isValid && O.isValid && O > R ? durMins(R, O) : 0;
+
+		badges.push({
+			key: "nc",
+			status: "ok",
+			text: `${duty.dutyType || "Non-counting"}${
+				len ? ` ${toHM(len)}` : ""
+			} (non-counting)`,
+		});
+		badges.push({ key: "restOM", status: "ok", text: "Rest —" });
+		badges.push({ key: "sectors", status: "ok", text: "Sectors —" });
+		badges.push({ key: "disc", status: "ok", text: "Discretion —" });
+		return { badges, notes };
+	}
 
 	// Standby-only day (no FDP)
 	if (isStandby && !duty.sbCalled && !hasFDP && duty.sbStart && duty.sbEnd) {
 		const sbM = effectiveStandbyMins(duty); // equals full window here
 		const s = sbM > 12 * 60 ? "bad" : sbM >= 11 * 60 ? "warn" : "ok";
+
 		badges.push({
 			key: "standby",
 			status: s,
@@ -189,6 +310,7 @@ export function dutyLegality(duty, prevDuty) {
 		});
 		badges.push({ key: "restOM", status: "ok", text: "Rest — (no FDP)" });
 		badges.push({ key: "sectors", status: "ok", text: "Sectors —" });
+
 		const disc = Number(duty.discretionMins || 0);
 		badges.push({
 			key: "disc",
@@ -206,6 +328,7 @@ export function dutyLegality(duty, prevDuty) {
 	let s = "ok";
 	if (fdpM > limit) s = "bad";
 	else if (fdpM >= limit - 30) s = "warn";
+
 	badges.push({
 		key: "limit",
 		status: s,
@@ -223,6 +346,7 @@ export function dutyLegality(duty, prevDuty) {
 		const req = restRequirement(prevDuty, duty);
 		let rs = "ok";
 		if (restM < req.minMins) rs = req.minMins - restM >= 60 ? "bad" : "warn";
+
 		badges.push({
 			key: "restOM",
 			status: rs,
@@ -246,6 +370,7 @@ export function dutyLegality(duty, prevDuty) {
 			text: `Standby ${called ? "(used) " : ""}${toHM(sbEffM)} (≤12h)`,
 		});
 	}
+
 	if (isStandby && duty.sbCalled && hasFDP) {
 		const sum = sbEffM + fdpM;
 		const s3 = sum > 20 * 60 ? "bad" : sum >= 20 * 60 - 30 ? "warn" : "ok";
@@ -271,13 +396,11 @@ export function dutyLegality(duty, prevDuty) {
 				duty.discretionBy || "—"
 			}).`
 		);
+
 	return { badges, notes };
 }
 
-/** Rolling windows & quick stats */
-export function isWorkingDuty(d) {
-	return (d?.dutyType || "").toLowerCase() !== "rest";
-}
+/** Group duties by calendar day (any entry, including Sick / FW / HR) */
 export function groupByDay(duties) {
 	const map = new Map();
 	for (const d of duties) {
@@ -289,22 +412,26 @@ export function groupByDay(duties) {
 	return map;
 }
 
+/** Rolling windows & quick stats */
 export function rollingStats(allDuties, ref = DateTime.local()) {
-	const duties = [...allDuties].sort((a, b) => {
-		const A = dt(a.report || a.sbStart || 0),
-			B = dt(b.report || b.sbStart || 0);
-		return A - B;
-	});
+	// IMPORTANT:
+	// Do NOT sort here. The app keeps duties in newest → oldest order and also
+	// relies on index relationships elsewhere (e.g. dPrev = duties[i+1]).
+	// rollingStats does not require ordering because it clips intervals by time.
+	const duties = [...allDuties];
+
 	const now = dt(ref);
 
 	function intervalsOf(d) {
 		const intervals = [];
-		// FDP
+
+		// FDP / generic duty (report->off)
 		if (d.report && d.off) {
 			const R = dt(d.report),
 				O = dt(d.off);
 			if (R.isValid && O.isValid && O > R) intervals.push({ s: R, e: O });
 		}
+
 		// Standby (clip to call or report if called)
 		if (d.sbStart && (d.sbEnd || d.sbCall || d.report)) {
 			const S = dt(d.sbStart);
@@ -318,6 +445,7 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 			}
 			if (S?.isValid && E?.isValid && E > S) intervals.push({ s: S, e: E });
 		}
+
 		return intervals;
 	}
 
@@ -326,8 +454,11 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 		const start = now.minus({ hours: days * 24 });
 		const end = now;
 		let minutes = 0;
+
 		for (const d of duties) {
-			if (!isWorkingDuty(d)) continue;
+			// Only count duty types that count toward limits
+			if (!countsTowardLimits(d)) continue;
+
 			for (const { s, e } of intervalsOf(d)) {
 				if (e < start || s > end) continue;
 				const clipS = s < start ? start : s;
@@ -335,6 +466,7 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 				minutes += durMins(clipS, clipE);
 			}
 		}
+
 		return minutes;
 	}
 
@@ -342,23 +474,28 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 	const mins28 = sumWindow(RULES.windows.last28Days);
 	const avgWeeklyHrs28 = mins28 / 4 / 60;
 
-	// Consecutive work days (standby counts)
+	// Consecutive "work-like" days:
+	// - any logged duty except Sick counts as a work-like day (including FW/HR)
+	// - OFF days are days with no entries at all
 	const byDay = groupByDay(duties);
 	let consecWorkDays = 0;
 	for (let i = 0; i < 60; i++) {
 		const day = now.minus({ days: i }).toFormat("yyyy-LL-dd");
-		const hadWork = (byDay.get(day) || []).some(isWorkingDuty);
+		const arr = byDay.get(day) || [];
+		const hadWork = arr.some(isWorkingDuty); // Sick does NOT count; FW/HR do count as work-like
 		if (hadWork) consecWorkDays++;
 		else break;
 	}
 
-	// Off-day counts (calendar-day based, as before)
+	// Off-day counts: OFF = no entries at all.
+	// Sick explicitly does NOT count as OFF because it is an entry.
 	function countOffDays(days) {
 		let c = 0;
 		for (let i = 0; i < days; i++) {
 			const day = now.minus({ days: i }).toFormat("yyyy-LL-dd");
-			const hadWork = (byDay.get(day) || []).some(isWorkingDuty);
-			if (!hadWork) c++;
+			const arr = byDay.get(day) || [];
+			const hasAnyEntry = arr.length > 0;
+			if (!hasAnyEntry) c++;
 		}
 		return c;
 	}
@@ -368,8 +505,9 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 		let streak = 0;
 		for (let i = 0; i < RULES.windows.last14Days; i++) {
 			const day = now.minus({ days: i }).toFormat("yyyy-LL-dd");
-			const hadWork = (byDay.get(day) || []).some(isWorkingDuty);
-			if (!hadWork) {
+			const arr = byDay.get(day) || [];
+			const hasAnyEntry = arr.length > 0;
+			if (!hasAnyEntry) {
 				streak++;
 				if (streak >= 2) return true;
 			} else streak = 0;
@@ -377,42 +515,43 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 		return false;
 	})();
 
-	// ✅ Rolling 28-day (672-hour) lookback for discretion count.
+	// ✅ Rolling 28-day (672-hour) lookback for discretion count (only counted duties).
 	const start28 = now.minus({ hours: RULES.windows.last28Days * 24 });
 	let discretionCount28 = 0;
 	for (const d of duties) {
 		const R = dt(d.report || d.sbStart);
-		if (R >= start28 && R <= now && Number(d.discretionMins || 0) > 0)
-			discretionCount28++;
+		if (!R?.isValid) continue;
+		if (R < start28 || R > now) continue;
+		if (!countsTowardLimits(d)) continue;
+		if (Number(d.discretionMins || 0) > 0) discretionCount28++;
 	}
 
-	// ✅ NEW: Off days in calendar year (YTD: 1 Jan → anchor day inclusive).
-	// We intentionally do NOT count future days in the year (unknown roster) as "off".
+	// ✅ Off days in calendar year (YTD: 1 Jan → anchor day inclusive).
+	// OFF = no entries at all for that day.
 	const calYear = now.year;
 	const yearStart = now.startOf("year").startOf("day");
-	const yearEnd = now.startOf("day"); // anchor day (inclusive)
+	const yearEnd = now.startOf("day");
 	let offDaysInYear = 0;
 	{
 		let cur = yearStart;
 		while (cur <= yearEnd) {
 			const key = cur.toFormat("yyyy-LL-dd");
-			const hadWork = (byDay.get(key) || []).some(isWorkingDuty);
-			if (!hadWork) offDaysInYear++;
+			const arr = byDay.get(key) || [];
+			const hasAnyEntry = arr.length > 0;
+			if (!hasAnyEntry) offDaysInYear++;
 			cur = cur.plus({ days: 1 });
 		}
 	}
 
 	return {
-		mins7,
-		mins28,
+		mins7, // counted duty minutes (excl FW/HR/Sick)
+		mins28, // counted duty minutes (excl FW/HR/Sick)
 		avgWeeklyHrs28,
 		consecWorkDays,
 		hasTwoConsecutiveOffIn14,
 		offDaysIn28,
 		meetsSixOffIn28: offDaysIn28 >= 6,
 		discretionCount28,
-
-		// NEW fields
 		calYear,
 		offDaysInYear,
 	};
@@ -420,28 +559,35 @@ export function rollingStats(allDuties, ref = DateTime.local()) {
 
 export function badgesFromRolling(roll) {
 	const b = [];
-	const s7 =
-		roll.mins7 > RULES.windows.maxDuty7DaysHrs * 60
-			? "bad"
-			: roll.mins7 > RULES.windows.maxDuty7DaysHrs * 60 - 60
+
+	// SA-CATS trigger indicator (not a "cap" badge):
+	const triggerMins = RULES.windows.flightDutyTrigger7DaysHrs * 60;
+	const trigStatus =
+		roll.mins7 >= triggerMins
+			? "warn"
+			: roll.mins7 >= triggerMins - 60
 			? "warn"
 			: "ok";
+
 	b.push({
 		key: "duty7",
-		status: s7,
-		text: `Last 7d duty ${toHM(roll.mins7)} (≤${
-			RULES.windows.maxDuty7DaysHrs
+		status: trigStatus,
+		text: `Last 7d counted duty ${toHM(roll.mins7)} (trigger ${
+			RULES.windows.flightDutyTrigger7DaysHrs
 		}h)`,
 	});
+
 	let sAvg = "ok";
 	if (roll.avgWeeklyHrs28 > RULES.windows.avgWeeklyCapHrs) sAvg = "bad";
 	else if (roll.avgWeeklyHrs28 > RULES.windows.avgWeeklyCapHrs - 2)
 		sAvg = "warn";
+
 	b.push({
 		key: "avgWeekly",
 		status: sAvg,
 		text: `Avg weekly (28d) ${roll.avgWeeklyHrs28.toFixed(1)} h (≤50h)`,
 	});
+
 	b.push({
 		key: "consec",
 		status:
@@ -452,6 +598,7 @@ export function badgesFromRolling(roll) {
 				: "ok",
 		text: `Consecutive work days ${roll.consecWorkDays}`,
 	});
+
 	b.push({
 		key: "twoOff14",
 		status: roll.hasTwoConsecutiveOffIn14 ? "ok" : "warn",
@@ -459,13 +606,13 @@ export function badgesFromRolling(roll) {
 			roll.hasTwoConsecutiveOffIn14 ? "Yes" : "No"
 		}`,
 	});
+
 	b.push({
 		key: "sixOff28",
 		status: roll.meetsSixOffIn28 ? "ok" : "warn",
 		text: `Off days in 28: ${roll.offDaysIn28}`,
 	});
 
-	// ✅ NEW pill: appears next to "Off days in 28" in the badge flow.
 	b.push({
 		key: "offYear",
 		status: "ok",
@@ -477,15 +624,27 @@ export function badgesFromRolling(roll) {
 		status: roll.discretionCount28 > 0 ? "warn" : "ok",
 		text: `Discretion (28d): ${roll.discretionCount28}`,
 	});
+
 	return b;
 }
 
 /** Flags — mirror badge WARN/BAD (plus info) */
 export function flagsForDuty(duty, prevDuty, roll) {
 	const flags = [];
-	const type = String(duty.dutyType || "").toLowerCase();
+
+	const type = normType(duty.dutyType);
 	const isStandby = type === "standby";
 	const hasFDP = Boolean(duty.report && duty.off);
+
+	// Non-counting types: no limit flags, but can show info if disruptive times exist
+	if (isNonCountingType(type) && !isStandby) {
+		if (classifyDisruptive(duty).any)
+			flags.push({
+				level: "info",
+				text: "Disruptive (early/night/late) — non-counting duty.",
+			});
+		return flags;
+	}
 
 	// Standby-only
 	if (isStandby && !duty.sbCalled && !hasFDP) {
@@ -504,6 +663,7 @@ export function flagsForDuty(duty, prevDuty, roll) {
 	if (hasFDP) {
 		const { mins: lim } = fdpLimitMins(duty);
 		const fdp = durMins(duty.report, duty.off);
+
 		if (fdp > lim)
 			flags.push({
 				level: "bad",
@@ -514,11 +674,12 @@ export function flagsForDuty(duty, prevDuty, roll) {
 				level: "warn",
 				text: `FDP within 30 min of limit (${toHM(fdp)}/${toHM(lim)}).`,
 			});
+
 		if (Number(duty.sectors || 0) <= 0)
 			flags.push({ level: "warn", text: "FDP recorded with 0 sectors." });
 	}
 
-	// Rest
+	// Rest minima (home/away)
 	if (hasFDP && prevDuty?.off) {
 		const restM = durMins(prevDuty.off, duty.report);
 		const req = restRequirement(prevDuty, duty);
@@ -538,6 +699,7 @@ export function flagsForDuty(duty, prevDuty, roll) {
 			level: "warn",
 			text: `Standby ${toHM(sbEffM)} within 1h of 12h cap.`,
 		});
+
 	if (isStandby && duty.sbCalled && hasFDP) {
 		const sum = sbEffM + durMins(duty.report, duty.off);
 		if (sum > 20 * 60)
@@ -552,21 +714,54 @@ export function flagsForDuty(duty, prevDuty, roll) {
 			});
 	}
 
-	// Rolling mirrors
+	// Rolling trigger + rest check (SA-CATS 50h/7d -> 24h rest before further duties)
 	if (roll) {
-		if (roll.mins7 > RULES.windows.maxDuty7DaysHrs * 60)
-			flags.push({
-				level: "bad",
-				text: `Last 7d duty ${toHM(roll.mins7)} > ${
-					RULES.windows.maxDuty7DaysHrs
-				}h.`,
-			});
-		else if (roll.mins7 >= RULES.windows.maxDuty7DaysHrs * 60 - 60)
+		const triggerMins = RULES.windows.flightDutyTrigger7DaysHrs * 60;
+		const requiredRestMins = RULES.windows.requiredRestAfterTriggerHrs * 60;
+
+		if (roll.mins7 >= triggerMins) {
+			// Only apply this check when the *current duty* counts toward limits
+			// (FW/HR/Sick shouldn't trigger this).
+			if (countsTowardLimits(duty)) {
+				const prevEnd = dutyEndISO(prevDuty);
+				const curStart = dutyStartISO(duty);
+
+				if (prevEnd && curStart) {
+					const restM = durMins(prevEnd, curStart);
+					if (restM < requiredRestMins) {
+						flags.push({
+							level: "bad",
+							text: `CATS trigger: ≥${
+								RULES.windows.flightDutyTrigger7DaysHrs
+							}h in last 7d; require ${
+								RULES.windows.requiredRestAfterTriggerHrs
+							}h rest before duty (only ${toHM(restM)}).`,
+						});
+					} else {
+						flags.push({
+							level: "info",
+							text: `CATS trigger met (≥${
+								RULES.windows.flightDutyTrigger7DaysHrs
+							}h/7d) — ${toHM(restM)} rest OK.`,
+						});
+					}
+				} else {
+					flags.push({
+						level: "warn",
+						text: `CATS trigger met (≥${RULES.windows.flightDutyTrigger7DaysHrs}h/7d) — cannot verify 24h rest (missing times).`,
+					});
+				}
+			}
+		} else if (roll.mins7 >= triggerMins - 60) {
 			flags.push({
 				level: "warn",
-				text: `Last 7d duty within 60 min of ${RULES.windows.maxDuty7DaysHrs}h.`,
+				text: `Approaching CATS trigger: ${toHM(roll.mins7)}/${
+					RULES.windows.flightDutyTrigger7DaysHrs
+				}h in last 7d.`,
 			});
+		}
 
+		// 28d avg cap flags (existing)
 		if (roll.avgWeeklyHrs28 > RULES.windows.avgWeeklyCapHrs)
 			flags.push({
 				level: "bad",
@@ -596,6 +791,7 @@ export function flagsForDuty(duty, prevDuty, roll) {
 				level: "warn",
 				text: "No ≥2 consecutive off days in last 14.",
 			});
+
 		if (!roll.meetsSixOffIn28)
 			flags.push({
 				level: "warn",
@@ -606,6 +802,7 @@ export function flagsForDuty(duty, prevDuty, roll) {
 	// Info
 	if (classifyDisruptive(duty).any)
 		flags.push({ level: "info", text: "Disruptive duty (early/night/late)." });
+
 	if (Number(duty.discretionMins || 0) > 0)
 		flags.push({
 			level: "info",
@@ -613,12 +810,14 @@ export function flagsForDuty(duty, prevDuty, roll) {
 				duty.discretionReason || "—"
 			}).`,
 		});
+
 	return flags;
 }
 
 /** Quick stats (lightweight) */
 export function quickStats(all) {
 	const d = [...all];
+
 	if (!d.length)
 		return {
 			averages: { avgDutyLen: 0, avgSectors: 0, commonReportWindow: "" },
@@ -634,13 +833,16 @@ export function quickStats(all) {
 	let totalMins = 0,
 		totalDuties = 0,
 		totalSectors = 0;
+
 	const windows = [];
 	const now = DateTime.local();
 	const thisMonthStart = now.startOf("month");
+
 	let disruptiveThisMonth = 0,
 		withDiscretion = 0,
 		airportStandbyCalls = 0,
 		awayNightsThisMonth = 0;
+
 	let sbDays = 0,
 		sbUsed = 0,
 		callNoticeMins = [];
@@ -650,14 +852,16 @@ export function quickStats(all) {
 			O = dt(x.off),
 			S = dt(x.sbStart),
 			E = dt(x.sbEnd);
-		// Duty length for averages: prefer FDP, fall back to standby-only
-		if (R?.isValid && O?.isValid) {
+
+		// Duty length for averages: prefer report/off, fall back to standby-only window.
+		if (R?.isValid && O?.isValid && O > R) {
 			totalMins += durMins(R, O);
 			totalDuties++;
-		} else if (S?.isValid && E?.isValid) {
+		} else if (S?.isValid && E?.isValid && E > S) {
 			totalMins += durMins(S, E);
 			totalDuties++;
 		}
+
 		totalSectors += Number(x.sectors || 0);
 
 		if (R?.isValid) windows.push(R.hour);
@@ -672,12 +876,13 @@ export function quickStats(all) {
 				(O?.isValid && O.hour >= 22)
 			)
 				disruptiveThisMonth++;
+
 			if (String(x.location || "").toLowerCase() === "away")
 				awayNightsThisMonth++;
 		}
 
 		// Standby stats
-		if (S?.isValid && E?.isValid) {
+		if (S?.isValid && E?.isValid && E > S) {
 			sbDays++;
 			if (x.sbCalled) sbUsed++;
 			if (x.sbCalled && x.sbCall) {
@@ -704,12 +909,14 @@ export function quickStats(all) {
 		avgSectors: totalDuties ? totalSectors / totalDuties : 0,
 		commonReportWindow,
 	};
+
 	const counts = {
 		disruptiveThisMonth,
 		withDiscretion,
 		airportStandbyCalls,
 		awayNightsThisMonth,
 	};
+
 	const standby = {
 		usedPct: sbDays ? Math.round((sbUsed * 100) / sbDays) : 0,
 		avgCalloutNoticeMins: callNoticeMins.length

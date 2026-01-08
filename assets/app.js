@@ -25,7 +25,7 @@ import {
 const { DateTime } = luxon;
 
 /* ---------------- Version ---------------- */
-const APP_VERSION = "v1.0.6";
+const APP_VERSION = "v1.0.7";
 
 /* ---------------- Dexie ---------------- */
 const db = new Dexie("safair-duty-db");
@@ -184,8 +184,8 @@ function ensureFlagStyles() {
     #flagsFeed li.warn .chip { color: #8a5a00; background: rgba(178,106,0,0.10); border-color: #b26a00; }
     #flagsFeed li.bad  { border-color: #c62828; background: rgba(198,40,40,0.10); color:#662020; }
     #flagsFeed li.bad  .chip { color: #8f1e1e; background: rgba(198,40,40,0.10); border-color: #c62828; }
-    #flagsFeed li.info { border-color: #2458e6; background: rgba(36,88,230,0,10); color:#1f3f99; }
-    #flagsFeed li.info .chip { color: #1d46b3; background: rgba(36,88,230,0,10); border-color: #2458e6; }
+    #flagsFeed li.info { border-color: #2458e6; background: rgba(36,88,230,0.10); color:#1f3f99; }
+    #flagsFeed li.info .chip { color: #1d46b3; background: rgba(36,88,230,0.10); border-color: #2458e6; }
     [data-theme="dark"] #flagsFeed li { border-color: var(--bd); background: var(--panel); }
     [data-theme="dark"] #flagsFeed li.warn { border-color: #6b4800; background: rgba(107,72,0,0.18); color:#d7a049; }
     [data-theme="dark"] #flagsFeed li.warn .chip { color:#ffd18a; background: rgba(107,72,0,0.18); border-color:#d7a049; }
@@ -284,6 +284,7 @@ function parseHM(hm) {
 }
 
 function nextAssumptionOffsetDays() {
+	// These assumptions are ALWAYS relative to the draft duty, and apply *before* it:
 	// Day before = -1, then -2, -3 ...
 	return -(planning.items.length + 1);
 }
@@ -315,7 +316,7 @@ function showEditor(kind) {
 		kind === "work" ? "Work day" : kind === "standby" ? "Standby" : "Off day";
 
 	let html = `
-		<label>Applies to
+		<label>Applies to (relative to the draft duty)
 			<input type="text" id="assumpDay" value="${dayLabel}" disabled />
 		</label>
 	`;
@@ -373,7 +374,7 @@ function showEditor(kind) {
 
 function renderAssumptionsUI() {
 	if (assumptionCount)
-		assumptionCount.textContent = `Assumptions: ${planning.items.length}`;
+		assumptionCount.textContent = `Assumptions (days before draft): ${planning.items.length}`;
 
 	if (!assumptionListWrap || !assumptionList) return;
 
@@ -475,7 +476,6 @@ function ghostDutiesForDraft(draft) {
 
 async function recomputeWhatIfIfVisible() {
 	if (!whatIfShown) return;
-	// Recompute live preview (no toggling)
 	await simulateWhatIf(true);
 }
 
@@ -489,19 +489,66 @@ async function getAllDutiesSorted() {
 	return all;
 }
 
+function isNonCountingWindowType(typeLower) {
+	return (
+		typeLower === "flight watch" ||
+		typeLower === "home reserve" ||
+		typeLower === "sick"
+	);
+}
+
+function isSickType(typeLower) {
+	return typeLower === "sick";
+}
+
 async function saveDuty() {
 	const d = formToDuty();
 
-	const isStandby = (d.dutyType || "").toLowerCase() === "standby";
+	const type = String(d.dutyType || "").toLowerCase();
+	const isStandby = type === "standby";
+	const isNonCountingWindow = isNonCountingWindowType(type);
+	const isSick = isSickType(type);
+
 	const hasFDP = Boolean(d.report && d.off);
 
+	// Standby-only: require standby window.
 	if (isStandby && !d.sbCalled && !hasFDP) {
 		if (!d.sbStart || !d.sbEnd) {
 			alert("Please enter Standby Window Start and End.");
 			return;
 		}
 		d.sectors = 0;
+	} else if (isNonCountingWindow) {
+		// FIX: Sick can be saved with NO times.
+		// (If you *do* enter one time, require the other too.)
+		if (isSick) {
+			const any = Boolean(d.report || d.off);
+			const both = Boolean(d.report && d.off);
+			if (any && !both) {
+				alert(
+					"For Sick: either leave times blank, or enter both Sign On and Sign Off."
+				);
+				return;
+			}
+			if (both && dt(d.off) <= dt(d.report)) {
+				alert("Sign off must be after sign on.");
+				return;
+			}
+			d.sectors = 0;
+		} else {
+			// Flight Watch / Home Reserve: must have report/off (your current rule)
+			if (!d.report || !d.off) {
+				alert("Please enter both Sign On and Sign Off.");
+				return;
+			}
+			if (dt(d.off) <= dt(d.report)) {
+				alert("Sign off must be after sign on.");
+				return;
+			}
+			d.sectors = 0;
+		}
 	} else {
+		// Normal duties: must have report/off
 		if (!d.report || !d.off) {
 			alert("Please enter both Sign On and Sign Off.");
 			return;
@@ -599,7 +646,11 @@ async function simulateWhatIf(recomputeOnly = false) {
 	const draft = formToDuty();
 	delete draft.id;
 
-	const isStandby = (draft.dutyType || "").toLowerCase() === "standby";
+	const type = String(draft.dutyType || "").toLowerCase();
+	const isStandby = type === "standby";
+	const isNonCountingWindow = isNonCountingWindowType(type);
+	const isSick = isSickType(type);
+
 	const hasFDP = Boolean(draft.report && draft.off);
 
 	// Validate like Save Duty, but don't block with alerts (use toast).
@@ -609,6 +660,35 @@ async function simulateWhatIf(recomputeOnly = false) {
 			return;
 		}
 		draft.sectors = 0;
+	} else if (isNonCountingWindow) {
+		// FIX: Sick in What-if can be blank times; if one time entered, require both.
+		if (isSick) {
+			const any = Boolean(draft.report || draft.off);
+			const both = Boolean(draft.report && draft.off);
+			if (any && !both) {
+				toast(
+					"For Sick: leave times blank, or enter both Sign On and Sign Off.",
+					"warn",
+					2600
+				);
+				return;
+			}
+			if (both && dt(draft.off) <= dt(draft.report)) {
+				toast("Sign off must be after sign on.", "warn", 2400);
+				return;
+			}
+			draft.sectors = 0;
+		} else {
+			if (!draft.report || !draft.off) {
+				toast("What-if needs Sign On and Sign Off.", "warn", 2400);
+				return;
+			}
+			if (dt(draft.off) <= dt(draft.report)) {
+				toast("Sign off must be after sign on.", "warn", 2400);
+				return;
+			}
+			draft.sectors = 0;
+		}
 	} else {
 		if (!draft.report || !draft.off) {
 			toast("What-if needs Sign On and Sign Off.", "warn", 2400);
@@ -641,7 +721,9 @@ async function simulateWhatIf(recomputeOnly = false) {
 
 	const when = dt(draft.report || draft.sbStart);
 	const kind = String(draft.dutyType || "").toUpperCase();
-	const ghostInfo = ghosts.length ? ` · +${ghosts.length} assumptions` : "";
+	const ghostInfo = ghosts.length
+		? ` · +${ghosts.length} assumptions (before)`
+		: "";
 	const ctx = `What-if (not saved): ${
 		when?.isValid ? when.toFormat("ccc, dd LLL yyyy HH:mm") : "—"
 	} · ${kind}${ghostInfo}`;
@@ -836,8 +918,6 @@ function renderQuickStats(boxEl, stats) {
 				`Avg callout notice: ${
 					standby.avgCalloutNoticeMins
 						? toHM(standby.avgCalloutNoticeMins)
-						: standby.avgCallNoticeMins
-						? toHM(standby.avgCallNoticeMins)
 						: "—"
 				}`
 			)
