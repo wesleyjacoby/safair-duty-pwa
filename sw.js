@@ -3,7 +3,7 @@
    - Cache-first for same-origin static assets
    - Network-first for navigations (fallback to cached index.html)
 */
-const CACHE = "safair-duty-v1.0.7"; // bump on any asset changes
+const CACHE = "safair-duty-v1.0.8"; // bump on any asset changes
 
 const CORE_ASSETS = [
 	"./",
@@ -21,7 +21,7 @@ const CORE_ASSETS = [
 
 self.addEventListener("install", (event) => {
 	event.waitUntil(
-		caches.open(CACHE).then((cache) => cache.addAll(CORE_ASSETS))
+		caches.open(CACHE).then((cache) => cache.addAll(CORE_ASSETS)),
 	);
 	self.skipWaiting();
 });
@@ -31,10 +31,10 @@ self.addEventListener("activate", (event) => {
 		(async () => {
 			const keys = await caches.keys();
 			await Promise.all(
-				keys.map((k) => (k === CACHE ? null : caches.delete(k)))
+				keys.map((k) => (k === CACHE ? null : caches.delete(k))),
 			);
 			await self.clients.claim();
-		})()
+		})(),
 	);
 });
 
@@ -53,7 +53,7 @@ self.addEventListener("fetch", (event) => {
 					const offline = await cache.match("./index.html");
 					return offline || Response.error();
 				}
-			})()
+			})(),
 		);
 		return;
 	}
@@ -74,7 +74,7 @@ self.addEventListener("fetch", (event) => {
 				const res = await fetch(req);
 				if (res && res.ok) cache.put(req, res.clone());
 				return res;
-			})()
+			})(),
 		);
 	}
 });

@@ -43,7 +43,7 @@ const storageKeys = {
 
 const collapsed = {
 	history: new Set(
-		JSON.parse(localStorage.getItem(storageKeys.history) || "[]")
+		JSON.parse(localStorage.getItem(storageKeys.history) || "[]"),
 	),
 	flags: new Set(JSON.parse(localStorage.getItem(storageKeys.flags) || "[]")),
 };
@@ -52,7 +52,7 @@ let seeded = localStorage.getItem(storageKeys.seeded) === "1";
 function saveCollapsed() {
 	localStorage.setItem(
 		storageKeys.history,
-		JSON.stringify([...collapsed.history])
+		JSON.stringify([...collapsed.history]),
 	);
 	localStorage.setItem(storageKeys.flags, JSON.stringify([...collapsed.flags]));
 	localStorage.setItem(storageKeys.seeded, seeded ? "1" : "0");
@@ -147,10 +147,10 @@ function toast(msg, type = "info", ms = 2000) {
 		type === "bad"
 			? "#c62828"
 			: type === "warn"
-			? "#b26a00"
-			: type === "success"
-			? "#1e8e3e"
-			: "#2458e6";
+				? "#b26a00"
+				: type === "success"
+					? "#1e8e3e"
+					: "#2458e6";
 	Object.assign(n.style, {
 		padding: "10px 12px",
 		borderRadius: "10px",
@@ -393,14 +393,14 @@ function renderAssumptionsUI() {
 			it.kind === "work"
 				? `Work day (${Math.abs(it.offsetDays)}d before) · ${it.startHM} for ${
 						it.hours
-				  }h · ${it.sectors} legs · ${it.location}`
+					}h · ${it.sectors} legs · ${it.location}`
 				: it.kind === "standby"
-				? `Standby (${Math.abs(it.offsetDays)}d before) · ${it.startHM} for ${
-						it.hours
-				  }h · ${it.sbType} · ${it.location}`
-				: `Off day (${Math.abs(it.offsetDays)}d before)${
-						it.note ? ` · ${it.note}` : ""
-				  }`;
+					? `Standby (${Math.abs(it.offsetDays)}d before) · ${it.startHM} for ${
+							it.hours
+						}h · ${it.sbType} · ${it.location}`
+					: `Off day (${Math.abs(it.offsetDays)}d before)${
+							it.note ? ` · ${it.note}` : ""
+						}`;
 
 		const li = document.createElement("li");
 		li.innerHTML = `
@@ -449,7 +449,7 @@ function ghostDutiesForDraft(draft) {
 					sectors: Number(it.sectors || 0),
 					location: it.location || "Home",
 					discretionMins: 0,
-				})
+				}),
 			);
 		} else if (it.kind === "standby") {
 			ghosts.push(
@@ -466,7 +466,7 @@ function ghostDutiesForDraft(draft) {
 					sbEnd: end.toISO(),
 					sbCalled: false,
 					sbCall: null,
-				})
+				}),
 			);
 		}
 	}
@@ -484,7 +484,7 @@ async function getAllDutiesSorted() {
 	const all = await db.duties.toArray();
 	all.sort(
 		(a, b) =>
-			safeMillis(b.report || b.sbStart) - safeMillis(a.report || a.sbStart)
+			safeMillis(b.report || b.sbStart) - safeMillis(a.report || a.sbStart),
 	);
 	return all;
 }
@@ -526,7 +526,7 @@ async function saveDuty() {
 			const both = Boolean(d.report && d.off);
 			if (any && !both) {
 				alert(
-					"For Sick: either leave times blank, or enter both Sign On and Sign Off."
+					"For Sick: either leave times blank, or enter both Sign On and Sign Off.",
 				);
 				return;
 			}
@@ -669,7 +669,7 @@ async function simulateWhatIf(recomputeOnly = false) {
 				toast(
 					"For Sick: leave times blank, or enter both Sign On and Sign Off.",
 					"warn",
-					2600
+					2600,
 				);
 				return;
 			}
@@ -845,7 +845,7 @@ function renderFlagsGrouped(listEl, byMonth) {
 		header.className = "month-row";
 		const title = DateTime.fromFormat(ym, "yyyy-LL").toFormat("LLLL yyyy");
 		const btn = buildMonthToggle(title, ym, collapsed.flags, () =>
-			renderFlagsGrouped(listEl, byMonth)
+			renderFlagsGrouped(listEl, byMonth),
 		);
 		header.appendChild(btn);
 		listEl.appendChild(header);
@@ -886,29 +886,29 @@ function renderQuickStats(boxEl, stats) {
 		make(
 			`Avg duty length: ${
 				averages.avgDutyLen ? toHM(averages.avgDutyLen) : "—"
-			}`
-		)
+			}`,
+		),
 	);
 	boxEl.appendChild(
 		make(
 			`Avg sectors/duty: ${
 				averages.avgSectors ? averages.avgSectors.toFixed(2) : "—"
-			}`
-		)
+			}`,
+		),
 	);
 	boxEl.appendChild(
-		make(`Common report window: ${averages.commonReportWindow || "—"}`)
+		make(`Common report window (28d): ${averages.commonReportWindow || "—"}`),
 	);
 
 	boxEl.appendChild(
-		make(`Disruptive starts (this month): ${counts.disruptiveThisMonth}`)
+		make(`Disruptive starts (this month): ${counts.disruptiveThisMonth}`),
 	);
 	boxEl.appendChild(make(`Duties with discretion: ${counts.withDiscretion}`));
 	boxEl.appendChild(
-		make(`Airport standby calls: ${counts.airportStandbyCalls}`)
+		make(`Airport standby calls: ${counts.airportStandbyCalls}`),
 	);
 	boxEl.appendChild(
-		make(`Away-nights (this month): ${counts.awayNightsThisMonth}`)
+		make(`Away-nights (this month): ${counts.awayNightsThisMonth}`),
 	);
 
 	if (standby) {
@@ -919,8 +919,8 @@ function renderQuickStats(boxEl, stats) {
 					standby.avgCalloutNoticeMins
 						? toHM(standby.avgCalloutNoticeMins)
 						: "—"
-				}`
-			)
+				}`,
+			),
 		);
 	}
 }
@@ -949,7 +949,7 @@ function renderHistory(div, duties) {
 		const head = document.createElement("div");
 		const title = DateTime.fromFormat(ym, "yyyy-LL").toFormat("LLLL yyyy");
 		const btn = buildMonthToggle(title, ym, collapsed.history, () =>
-			renderHistory(div, duties)
+			renderHistory(div, duties),
 		);
 		head.appendChild(btn);
 		wrap.appendChild(head);
@@ -974,7 +974,7 @@ function renderHistory(div, duties) {
 			const left = R?.isValid
 				? `${R.toFormat("dd LLL HH:mm")} → ${
 						O?.isValid ? O.toFormat("HH:mm") : "—"
-				  }`
+					}`
 				: "—";
 
 			const hasFDP = Boolean(d.report && d.off);
@@ -990,8 +990,8 @@ function renderHistory(div, duties) {
 			const right = isStandbyOnly
 				? `Standby · ${sbText}`
 				: `${d.dutyType || "FDP"} · ${Number(
-						d.sectors || 0
-				  )} legs · ${fdpText}`;
+						d.sectors || 0,
+					)} legs · ${fdpText}`;
 
 			row.innerHTML = `<span>${left}</span><span>${right}</span>`;
 			row.addEventListener("click", async () => {
@@ -1127,8 +1127,8 @@ function dutiesToCSV(duties) {
 		v === null || v === undefined
 			? ""
 			: /[",\n]/.test(String(v))
-			? `"${String(v).replace(/"/g, '""')}"`
-			: String(v);
+				? `"${String(v).replace(/"/g, '""')}"`
+				: String(v);
 	const rows = [heads.join(",")];
 	for (const d of duties)
 		rows.push(heads.map((h) => esc(d[h] ?? "")).join(","));
@@ -1139,7 +1139,7 @@ async function exportJSON() {
 	const blob = new Blob([dutiesToJSON(duties)], { type: "application/json" });
 	downloadBlob(
 		blob,
-		`duties-${DateTime.local().toFormat("yyyyLLdd-HHmm")}.json`
+		`duties-${DateTime.local().toFormat("yyyyLLdd-HHmm")}.json`,
 	);
 	toast("Exported JSON", "info", 1600);
 }
@@ -1148,7 +1148,7 @@ async function exportCSV() {
 	const blob = new Blob([dutiesToCSV(duties)], { type: "text/csv" });
 	downloadBlob(
 		blob,
-		`duties-${DateTime.local().toFormat("yyyyLLdd-HHmm")}.csv`
+		`duties-${DateTime.local().toFormat("yyyyLLdd-HHmm")}.csv`,
 	);
 	toast("Exported CSV", "info", 1600);
 }

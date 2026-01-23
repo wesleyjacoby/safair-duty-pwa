@@ -184,7 +184,7 @@ function includesLocalNight(aISO, bISO) {
 			anchor.set({ hour: 22, minute: 0, second: 0, millisecond: 0 }),
 			anchor
 				.plus({ days: 1 })
-				.set({ hour: 6, minute: 0, second: 0, millisecond: 0 })
+				.set({ hour: 6, minute: 0, second: 0, millisecond: 0 }),
 		);
 
 	const rest = Interval.fromDateTimes(a, b);
@@ -394,7 +394,7 @@ export function dutyLegality(duty, prevDuty) {
 		notes.push(
 			`Discretion used: ${disc} min (${duty.discretionReason || "—"}; by ${
 				duty.discretionBy || "—"
-			}).`
+			}).`,
 		);
 
 	return { badges, notes };
@@ -566,8 +566,8 @@ export function badgesFromRolling(roll) {
 		roll.mins7 >= triggerMins
 			? "warn"
 			: roll.mins7 >= triggerMins - 60
-			? "warn"
-			: "ok";
+				? "warn"
+				: "ok";
 
 	b.push({
 		key: "duty7",
@@ -594,8 +594,8 @@ export function badgesFromRolling(roll) {
 			roll.consecWorkDays >= 7
 				? "bad"
 				: roll.consecWorkDays >= 6
-				? "warn"
-				: "ok",
+					? "warn"
+					: "ok",
 		text: `Consecutive work days ${roll.consecWorkDays}`,
 	});
 
@@ -771,7 +771,7 @@ export function flagsForDuty(duty, prevDuty, roll) {
 			flags.push({
 				level: "warn",
 				text: `Avg weekly (28d) approaching 50h (${roll.avgWeeklyHrs28.toFixed(
-					1
+					1,
 				)}h).`,
 			});
 
@@ -837,6 +837,7 @@ export function quickStats(all) {
 	const windows = [];
 	const now = DateTime.local();
 	const thisMonthStart = now.startOf("month");
+	const cutoff28 = now.minus({ days: 28 });
 
 	let disruptiveThisMonth = 0,
 		withDiscretion = 0,
@@ -864,7 +865,10 @@ export function quickStats(all) {
 
 		totalSectors += Number(x.sectors || 0);
 
-		if (R?.isValid) windows.push(R.hour);
+		if (R?.isValid && R >= cutoff28) {
+			windows.push(R.hour);
+		}
+
 		if ((x.discretionMins || 0) > 0) withDiscretion++;
 
 		// Month-specific counts
@@ -921,8 +925,8 @@ export function quickStats(all) {
 		usedPct: sbDays ? Math.round((sbUsed * 100) / sbDays) : 0,
 		avgCalloutNoticeMins: callNoticeMins.length
 			? Math.round(
-					callNoticeMins.reduce((a, b) => a + b, 0) / callNoticeMins.length
-			  )
+					callNoticeMins.reduce((a, b) => a + b, 0) / callNoticeMins.length,
+				)
 			: 0,
 	};
 
