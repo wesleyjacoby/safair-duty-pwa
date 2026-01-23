@@ -25,7 +25,7 @@ import {
 const { DateTime } = luxon;
 
 /* ---------------- Version ---------------- */
-const APP_VERSION = "v1.0.7";
+const APP_VERSION = "v1.0.8";
 
 /* ---------------- Dexie ---------------- */
 const db = new Dexie("safair-duty-db");
