@@ -253,10 +253,23 @@
         </section>
     </main>
 
-    <footer class="container footer">
-        <div class="small muted"><span id="versionStamp" title="OM tables aligned"></span></div>
-        <div><button id="btnClear" class="btn danger">Clear All (local)</button></div>
+    <footer class="container footer footer-grid">
+        <div class="footer-left small muted">
+            <span id="versionStamp" title="OM tables aligned"></span>
+        </div>
+
+        <div class="footer-center small muted">
+            Tools by the same developer:
+            <a href="https://pilot-cv.com" target="_blank" rel="noopener" class="footer-link">
+                PilotCV
+            </a>
+        </div>
+
+        <div class="footer-right">
+            <button id="btnClear" class="btn danger">Clear All (local)</button>
+        </div>
     </footer>
+
 
     <div id="updateBar" class="panel container" role="status" aria-live="polite" style="display:none">
         A new version is available.
