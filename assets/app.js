@@ -13,6 +13,7 @@ import {
 	badgesFromRolling,
 	quickStats,
 	flagsForDuty,
+	countsTowardLimits,
 } from "./calc.js";
 
 import { bootProFromQuery, isPro } from "./modules/premium.js";
@@ -25,7 +26,7 @@ import {
 const { DateTime } = luxon;
 
 /* ---------------- Version ---------------- */
-const APP_VERSION = "v1.0.9";
+const APP_VERSION = "v1.1.0";
 
 /* ---------------- Dexie ---------------- */
 const db = new Dexie("safair-duty-db");
@@ -934,7 +935,15 @@ function renderHistory(div, duties) {
 
 	const groups = new Map();
 	for (const d of duties) {
-		const key = dt(d.report || d.sbStart || Date.now()).toFormat("yyyy-LL");
+		const base = d.report ?? d.sbStart ?? d.off ?? Date.now();
+
+		let D = dt(base);
+		if (!D?.isValid) {
+			D = DateTime.fromMillis(Date.now());
+		}
+
+		const key = D.toFormat("yyyy-LL");
+
 		(groups.get(key) || groups.set(key, []).get(key)).push(d);
 	}
 	const months = [...groups.keys()].sort().reverse();
@@ -1062,10 +1071,30 @@ async function computeAndRender() {
 		}
 	}
 
-	const anchorRef = selected
-		? dt(selected.report || selected.sbStart)
-		: DateTime.local();
+	let anchorRef = DateTime.local();
+
+	if (selected) {
+		// If selected duty counts, anchor to it
+		if (countsTowardLimits(selected)) {
+			anchorRef = dt(selected.report || selected.sbStart);
+		} else {
+			// Otherwise anchor to the most recent counted duty
+			const idx = duties.findIndex((d) => d.id === selected.id);
+			for (let i = idx + 1; i < duties.length; i++) {
+				if (countsTowardLimits(duties[i])) {
+					anchorRef = dt(duties[i].report || duties[i].sbStart);
+					break;
+				}
+			}
+		}
+	}
+
+	if (!anchorRef?.isValid) {
+		anchorRef = DateTime.local();
+	}
+
 	const roll = rollingStats(duties, anchorRef);
+
 	combined.push(...badgesFromRolling(roll));
 	renderBadges(legalityBadges, combined);
 
